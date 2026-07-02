@@ -1,0 +1,39 @@
+expansion:
+  uspto:
+    - data/templates/uspto_model.onnx
+    - data/templates/uspto_unique_templates.csv
+  ringbreaker:
+    - data/templates/uspto_ringbreaker_model.onnx
+    - data/templates/uspto_ringbreaker_unique_templates.csv
+
+filter:
+  uspto: data/templates/uspto_filter_model.onnx
+
+stock:
+  zinc: data/external/zinc_stock.hdf5
+
+search:
+  return_first: true
+  algorithm: mcts
+  algorithm_config:
+    C: 1.4
+    default_prior: 0.5
+    use_prior: true
+    prune_cycles_in_search: true
+    search_rewards:
+      - "state score"
+    immediate_instantiation: []
+    mcts_grouping: null
+    search_rewards_weights: []
+  max_transforms: 6
+  iteration_limit: 5000
+  time_limit: 120
+  exclude_target_from_stock: true
+  break_bonds: []
+  freeze_bonds: []
+  break_bonds_operator: and
+
+expansion_policy: uspto
+filter_policy: uspto
+stock_policy:
+    - default
