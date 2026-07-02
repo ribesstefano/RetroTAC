@@ -216,3 +216,51 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Custom
+CLAUDE.md
+outputs/
+results/
+figures/
+
+# Large data files
+data/external/
+
+# Wandb logs
+wandb/
+
+# Logs
+logs/
+logs_test/
+
+# Optuna / SQLite databases
+*.db
+
+# Figures and pdfs
+*.png
+*.pdf
+
+# Model/weight files
+*.onnx
+
+# HDF5 files
+*.hdf5
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+# Processed data (regeneratable from pipeline)
+data/processed/
+external
+
+# Large files
+*.csv
+*.cxsmiles
+*.jsonl
+
+# Data folder
+data/
