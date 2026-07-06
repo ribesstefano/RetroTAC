@@ -1,7 +1,7 @@
 from xgb.model import XGBoostRegressor
 from pathlib import Path
 import yaml
-CONFIG_PATH = Path(__file__).parent / "model_config.yaml"
+CONFIG_PATH = Path(__file__).parent.parent / "models_config.yaml"
 with open(CONFIG_PATH) as f:
     CFG = yaml.safe_load(f)
 
@@ -10,7 +10,8 @@ FP_RADIUS        = CFG["features"]["fp_radius"]
 USE_FINGERPRINTS = CFG["features"]["use_fingerprints"]
 USE_DESCRIPTORS  = CFG["features"]["use_descriptors"]
 
-def build_xgb(trial, fp_radius, smiles_tr, y_tr, X_fp_tr, X_desc_tr, smiles_val=None, y_val=None, X_desc_val=None, **kwargs):
+def build_xgb(trial, fp_radius, smiles_tr, y_tr, X_fp_tr, X_desc_tr,
+              smiles_val=None, y_val=None, X_fp_val=None, X_desc_val=None, **kwargs):
     """Build and fit an XGBoost regressor.
 
     Args:
