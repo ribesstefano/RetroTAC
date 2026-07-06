@@ -261,6 +261,7 @@ external
 *.csv
 *.cxsmiles
 *.jsonl
+*.npy
 
 # Data folder
 data/
