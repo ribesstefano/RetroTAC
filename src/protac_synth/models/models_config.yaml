@@ -10,7 +10,7 @@ target: hac_weighted_score   # your TARGET column name
 molecule_col: molecule       # SMILES column name
 
 cross_validation:
-  seeds: [0, 1, 2, 3, 4]
+  seeds: [42, 123, 456, 789, 1011]
   n_folds: 5
 
 tracking:
