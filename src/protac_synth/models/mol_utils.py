@@ -8,7 +8,7 @@ from rdkit import Chem, RDLogger
 from rdkit.Chem import AllChem, Descriptors
 from rdkit.ML.Descriptors import MoleculeDescriptors
 from rdkit.Chem.MolStandardize import rdMolStandardize
-from rdkit.Chem.Scaffolds.MurckoScaffold import MurckoScaffoldSmiles, MakeScaffoldGeneric
+from rdkit.Chem.Scaffolds.MurckoScaffold import MurckoScaffoldSmiles, MakeScaffoldGeneric, GetScaffoldForMol
 from sklearn.pipeline import Pipeline as SkPipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
@@ -99,13 +99,17 @@ def make_preprocessor(use_fingerprints: bool, use_descriptors: bool,
     return SkPipeline([('desc', desc_pipeline)])
 
 def get_scaffold(smiles: str, generic: bool = False) -> str:
+    """Compute the Murcko scaffold for a SMILES string.
+
+    Returns the scaffold SMILES, or the original SMILES if parsing fails
+    or the scaffold is empty (e.g. acyclic molecules).
+    """
     mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
+    if mol is None:                      # unparseable -> fall back, don't crash
         return smiles
     if generic:
         scaffold = Chem.MolToSmiles(MakeScaffoldGeneric(mol))
     else:
-        from rdkit.Chem.Scaffolds.MurckoScaffold import GetScaffoldForMol
         scaffold = Chem.MolToSmiles(GetScaffoldForMol(mol))
     return scaffold if len(scaffold) > 0 else smiles
 
