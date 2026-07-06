@@ -102,19 +102,23 @@ class XGBoostRegressor():
         n_fp_cols   = self.fp_size if self.use_fingerprints else 0
         n_desc_cols = X_desc.shape[1] if (self.use_descriptors and X_desc is not None) else 0
 
-        self.preprocessor=make_preprocessor(self.use_fingerprints,self. use_descriptors, n_fp_cols, n_desc_cols, self.svd_components)
+        self.preprocessor_ = make_preprocessor(
+            self.use_fingerprints, self.use_descriptors,
+            n_fp_cols, n_desc_cols,
+            self.svd_components, self.random_state,
+        )
         self.target_transformer_ = QuantileTransformer(output_distribution='normal', random_state=self.random_state)
         X_proc = self.preprocessor_.fit_transform(X)
         y_transf = self.target_transformer_.fit_transform(y)
 
         default_xgb = dict(
             tree_method='hist',
+            device='cuda',
             objective='reg:pseudohubererror',
             multi_strategy='one_output_per_tree',
             n_estimators=2000,
             early_stopping_rounds=50 if smiles_val is not None else None,
             random_state=self.random_state,
-            n_jobs=2,
         )
         self.model_ = xgb.XGBRegressor(**{**default_xgb, **self.xgb_params})
 
@@ -157,7 +161,7 @@ class XGBoostRegressor():
             r2_score(y[:, i], y_pred[:, i]) for i in range(y.shape[1])
         ]))
 
-def save(self, path: str) -> None:
+    def save(self, path: str) -> None:
         """Save to two files: {path}.skops (sklearn) + {path}.ubj (XGBoost).
 
         The XGBoost model is saved separately in its native binary format
