@@ -46,6 +46,11 @@ notebooks = [
     "jupyterlab>=4.5",
     "ipywidgets>=7.8",
 ]
+llm_scoring = [
+    # LLM-as-judge scoring of retrosynthesis routes (scripts/llm_scoring/)
+    "dspy>=2.6",
+    "pydantic>=2.0",
+]
 
 [tool.uv]
 package = false
