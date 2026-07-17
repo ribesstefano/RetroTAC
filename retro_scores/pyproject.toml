@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "protac-retro-scores"
+version = "0.1.0"
+description = "Retrosynthesis-based scoring for PROTAC molecules: mol_scores (SA/SC/RA/SYBA/GASA/FS, per-molecule) and route_scores (AiZynthFinder-route-based, e.g. HAC-weighted score). Installed separately from the main protac-synthesizability package. See SETUP_scoring.md at the repo root."
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mol_scores*", "route_scores*"]

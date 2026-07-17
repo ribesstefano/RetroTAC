@@ -12,6 +12,8 @@ import pandas as pd
 
 from ._utils import safe_score
 
+COLUMNS = ["ra_score"]
+
 
 def compute(smiles: list) -> pd.DataFrame:
     print("Computing RAscore")

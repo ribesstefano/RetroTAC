@@ -5,7 +5,6 @@ SCScore (Synthetic Complexity Score; Coley et al., 2018).
 Raw: 1-5 (lower = easier).  Scaled: [0,1] (higher = easier).
 
 Run from the cloned SCScore repo (CatSci fork ships the .json.gz weights).
-Path comes from retro_scores._paths.
 """
 
 import sys
@@ -13,6 +12,8 @@ import numpy as np
 import pandas as pd
 
 from ._utils import safe_score
+
+COLUMNS = ["sc_score", "sc_score_scaled"]
 
 
 def compute(smiles: list) -> pd.DataFrame:
