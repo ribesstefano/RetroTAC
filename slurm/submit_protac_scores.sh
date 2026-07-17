@@ -17,11 +17,16 @@ mamba activate scoring_env
 # (fs_score.compute defaults num_workers=4, matching --cpus-per-task above).
 
 # --- paths ---------------------------------------------------------------
-PROJ=/proj/berzelius-2026-62/users/x_jzhuz/PROTAC-Synthesizability
+# Derived from this script's own location so it works from any checkout,
+# not just the one it was authored on.
+PROJ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INPUT=$PROJ/data/raw/routes_smiles_only.csv
 OUTPUT=$PROJ/data/synth_scores/routes_scores.csv
 
 # --- run -----------------------------------------------------------------
+# NOTE: SLURM opens --output/--error above before this script body runs, so
+# logs/synth_scores/ must already exist — create it once before first use:
+#   mkdir -p "$PROJ"/logs/synth_scores
 cd $PROJ
 python scripts/retrosynthesis/synthesizability_scores.py \
     "$INPUT" \
