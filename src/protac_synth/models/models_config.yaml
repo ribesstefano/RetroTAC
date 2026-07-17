@@ -23,4 +23,4 @@ torch:                   # for the MLP/GNN later
   patience: 20
 
 gnn:
-  chemeleon_weights: src/protac_synth/models/chemeleon_mp.pt
+  chemeleon_weights: PROTAC-Synthesizability/src/protac_synth/models/gnn/chemeleon_mp.pt
