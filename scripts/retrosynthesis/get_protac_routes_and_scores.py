@@ -48,10 +48,13 @@ from typing import List, Optional
 
 import pandas as pd
 
-# route_scores is installed separately (see retro_scores/), so it's importable
-# directly. Its init_finder() reaches into src.protac_synth.stock_utils as an
-# implicit namespace package, which needs the repo root itself on sys.path.
-sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
+# route_scores/ isn't pip-installed by the main uv-managed env (its heavy-dep
+# sibling mol_scores/ needs a separate scoring_env — see retro_scores/README.md),
+# so reach it directly via sys.path. Also needs the repo root itself on
+# sys.path for its own src.protac_synth.stock_utils reach-across.
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.append(str(_REPO_ROOT))
+sys.path.append(str(_REPO_ROOT / "retro_scores"))
 
 from route_scores.aizynthfinder_utils import append_df, extract_route_data, init_finder  # noqa: E402
 

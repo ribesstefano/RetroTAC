@@ -5,9 +5,8 @@ CLI entry point for computing synthesizability scores over a CSV of SMILES.
 
 Thin wrapper around mol_scores.compute_scores — all the scoring logic
 lives in the library; this just handles I/O and arguments. Requires the
-standalone `mol_scores` package (part of retro_scores/, see
-SETUP_scoring.md), installed separately from the main protac_synth
-environment.
+standalone `mol_scores` package (part of retro_scores/, see its
+README.md), installed separately from the main protac_synth environment.
 
 Example
 -------
