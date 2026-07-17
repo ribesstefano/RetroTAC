@@ -18,6 +18,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 import yaml
+import os, shutil   
  
 import numpy as np
 import optuna
@@ -38,15 +39,13 @@ CV_SEEDS         = _CFG["cross_validation"]["seeds"]
 N_FOLDS          = _CFG["cross_validation"]["n_folds"]
  
 # ── Paths (only train.py writes to these) ───────────────────────────────────
-_ROOT       = Path(__file__).parent
-OUTPUT_ROOT = _ROOT / "outputs"
-OPTUNA_DB   = OUTPUT_ROOT / "optuna" / "studies.db"
+_ROOT       = Path(__file__).parents[3]        # PROTAC-Synthesizability/ (repo root)
+OUTPUT_ROOT = _ROOT / "data" / "outputs"
 CV_DIR      = OUTPUT_ROOT / "cv"
 MODELS_DIR  = OUTPUT_ROOT / "models"
- 
-for _p in (OPTUNA_DB.parent, CV_DIR, MODELS_DIR):
+
+for _p in (CV_DIR, MODELS_DIR):
     _p.mkdir(parents=True, exist_ok=True)
- 
  
 # ── Model dispatch (lazy import so a run pulls in only its backend) ──────────
 def get_build_fn(model: str):
@@ -163,7 +162,7 @@ def tune_inner_fold(build_fn, df_train, X_fp, X_desc,
     X_desc_itr  = X_desc[inner_train_idx] if X_desc is not None else None
     X_desc_ival = X_desc[inner_val_idx]   if X_desc is not None else None
     fp_radius = FP_RADIUS
- 
+
     def objective(trial):
         m = build_fn(
             trial, fp_radius,
@@ -172,22 +171,39 @@ def tune_inner_fold(build_fn, df_train, X_fp, X_desc,
             X_fp_val=X_fp_ival, X_desc_val=X_desc_ival,
         )
         return float(m.score(smiles_ival, y_ival, X_fp=X_fp_ival, X_desc=X_desc_ival))
-    
-    db_path = OPTUNA_DB.parent / f"{prefix}_seed{seed}_fold{fold_idx}.db"
+
+    # ── node-local DB (reliable SQLite) + durable /proj snapshot (resume) ───
+    tmp_dir    = os.environ.get("TMPDIR", "/tmp")
+    local_db   = f"{tmp_dir}/{prefix}_seed{seed}_fold{fold_idx}.db"
+    out_dir    = CV_DIR / f"{prefix}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    persist_db = out_dir / f"{prefix}_seed{seed}_fold{fold_idx}.db"
+
+    # restore from a previous job's snapshot if one exists
+    if persist_db.exists():
+        shutil.copy(persist_db, local_db)
+
     study = optuna.create_study(
         study_name     = f"{prefix}_{seed}_fold{fold_idx}",
         direction      = "maximize",
-        storage        = f"sqlite:///{db_path}",
+        storage        = f"sqlite:///{local_db}",
         load_if_exists = True,
         sampler        = optuna.samplers.TPESampler(seed=seed + fold_idx),
         pruner         = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=3),
     )
-    study.optimize(objective, n_trials=n_trials)
- 
-    out = CV_DIR / prefix / f"best_params_seed{seed}_fold{fold_idx}.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "w") as f:
+
+    # snapshot the DB to /proj after every trial (whole-file copy -> reliable on VAST)
+    def _snapshot(study, trial):
+        shutil.copy(local_db, persist_db)
+
+    study.optimize(objective, n_trials=n_trials, callbacks=[_snapshot])
+
+    # persistent outputs
+    study.trials_dataframe().to_csv(
+        out_dir / f"trials_seed{seed}_fold{fold_idx}.csv", index=False)
+    with open(out_dir / f"best_params_seed{seed}_fold{fold_idx}.json", "w") as f:
         json.dump({**study.best_params, "best_r2_inner": study.best_value}, f, indent=2)
+
     return study.best_params
  
  
@@ -254,11 +270,12 @@ def aggregate_results(build_fn, df_train, X_fp, X_desc, prefix):
     mean_score, std_score = float(np.mean(scores)), float(np.std(scores))
     print(f"[{prefix}] mean R2 = {mean_score:.3f} +/- {std_score:.3f} (n={len(scores)})")
  
-    # overall-best params chosen by inner score (not outer -> no leak)
+    j# overall-best params chosen by inner score (not outer -> no leak)
     best_entry = max(best_params_all, key=lambda d: d.get("best_r2_inner", -np.inf))
+    best_inner = best_entry.get("best_r2_inner")          # keep for the YAML
     fp_radius  = best_entry.pop("fp_radius", FP_RADIUS)
-    best_entry.pop("best_r2_inner", None)
- 
+    best_entry.pop("best_r2_inner", None)                 # best_entry now = the hyperparameters
+
     final_model = build_fn(
         FixedTrial(best_entry), fp_radius,
         df_train["molecule"].tolist(), df_train[[TARGET]].values, X_fp, X_desc,
@@ -267,13 +284,27 @@ def aggregate_results(build_fn, df_train, X_fp, X_desc, prefix):
     model_path.parent.mkdir(parents=True, exist_ok=True)
     final_model.save(str(model_path))
     print(f"[{prefix}] final model saved to {model_path}")
+
+    # ── save the hyperparameters + CV summary as YAML next to the model ────
+    hparams_out = {
+        "model":            prefix,
+        "hyperparameters":  best_entry,        # the exact params the final model was trained with
+        "fp_radius":        fp_radius,
+        "cv_mean_r2":       round(mean_score, 4),
+        "cv_std_r2":        round(std_score, 4),
+        "best_inner_r2":    round(best_inner, 4) if best_inner is not None else None,
+        "n_folds":          len(scores),
+    }
+    with open(model_path.parent / f"{prefix}_hparams.yaml", "w") as f:
+        yaml.safe_dump(hparams_out, f, default_flow_style=False, sort_keys=False)
+    print(f"[{prefix}] hyperparameters saved to {model_path.parent / f'{prefix}_hparams.yaml'}")
+
     return mean_score, scores
- 
  
 # ── Entry point ─────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required=True, choices=["xgb", "mlp", "gnn"])
+    ap.add_argument("--model", choices=["xgb", "mlp", "gnn"])
     ap.add_argument("--input", required=True, help="path to the training CSV")
     ap.add_argument("--prefix", default="default")
     ap.add_argument("--n_trials", type=int, default=25)
@@ -283,15 +314,30 @@ def main():
                     help="aggregate the saved folds and retrain the final model")
     ap.add_argument("--precompute", action="store_true",
                     help="compute + cache fp/desc once, then exit (run before the folds)")
+    ap.add_argument("--split", action="store_true",
+                help="scaffold train/test split -> write *_train.csv / *_test.csv, then exit")
+    ap.add_argument("--test-size", type=float, default=0.2)
     args = ap.parse_args()
  
     df_train = pd.read_csv(args.input)
+
+    if args.split:
+        from mol_utils import scaffold_train_test_split
+        labels = scaffold_train_test_split(df_train["molecule"].tolist(),
+                                        test_size=args.test_size, random_state=42)
+        stem = Path(args.input).with_suffix("")
+        df_train[labels == "train"].to_csv(f"{stem}_train.csv", index=False)
+        df_train[labels == "test"].to_csv(f"{stem}_test.csv",  index=False)
+        print(pd.Series(labels).value_counts())
+        return
  
     # precompute: model-agnostic, no scaffolds / builder needed -> do it and exit
     if args.precompute:
         cache_features(df_train, args.input)
         return
- 
+    
+    if args.model is None:
+        ap.error("--model is required for training/aggregation")
     build_fn     = get_build_fn(args.model)
     X_fp, X_desc = prepare_inputs(args.model, df_train, args.input)
  
@@ -303,7 +349,5 @@ def main():
         df_train["scaffolds"] = df_train["molecule"].apply(get_scaffold)
         run_single_fold(build_fn, df_train, X_fp, X_desc,
                         args.seed, args.fold, args.prefix, args.n_trials)
- 
- 
 if __name__ == "__main__":
     main()
