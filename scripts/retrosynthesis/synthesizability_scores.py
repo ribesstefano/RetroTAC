@@ -3,8 +3,11 @@ synthesizability_scores.py
 ==========================
 CLI entry point for computing synthesizability scores over a CSV of SMILES.
 
-Thin wrapper around protac_synth.retro_scores.compute_scores — all the
-scoring logic lives in the library; this just handles I/O and arguments.
+Thin wrapper around mol_scores.compute_scores — all the scoring logic
+lives in the library; this just handles I/O and arguments. Requires the
+standalone `mol_scores` package (part of retro_scores/, see
+SETUP_scoring.md), installed separately from the main protac_synth
+environment.
 
 Example
 -------
@@ -13,7 +16,7 @@ Example
         data/protac_synth_scores.csv \
         --smiles-col molecule
 
-Typically invoked from slurm/submit_protac_scores.py as a batch job.
+Typically invoked from slurm/submit_protac_scores.sh as a batch job.
 """
 
 import argparse
@@ -21,7 +24,7 @@ import sys
 
 import pandas as pd
 
-from protac_synth.retro_scores import compute_scores, SCORE_COLUMNS
+from mol_scores import compute_scores, SCORE_COLUMNS
 
 
 def parse_args():
@@ -45,16 +48,12 @@ def main():
         sys.exit(f"ERROR: column '{args.smiles_col}' not found in {args.input_csv}. "
                  f"Available columns: {list(df.columns)}")
 
-    # compute_scores expects the SMILES column to be named 'molecule'
-    if args.smiles_col != "molecule":
-        df = df.rename(columns={args.smiles_col: "molecule"})
-
-    df = compute_scores(df, smiles_col="molecule")
+    df = compute_scores(df, smiles_col=args.smiles_col)
 
     if args.keep_all_columns:
-        out_cols = list(dict.fromkeys(list(df.columns)))
+        out_cols = list(df.columns)
     else:
-        out_cols = ["molecule"] + SCORE_COLUMNS
+        out_cols = [args.smiles_col] + SCORE_COLUMNS
 
     df[out_cols].to_csv(args.output_csv, index=False)
     print(f"Saved scores to {args.output_csv}")

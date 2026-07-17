@@ -38,10 +38,12 @@ from typing import Dict, List
 
 import pandas as pd
 
-# Add src/ to the path so aizynthfinder_utils, scoring_utils, etc. are importable.
-sys.path.append(str(Path(__file__).resolve().parent.parent.parent / "src"))
+# route_scores is installed separately (see retro_scores/), so it's importable
+# directly. Its init_finder() reaches into src.protac_synth.stock_utils as an
+# implicit namespace package, which needs the repo root itself on sys.path.
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
-from aizynthfinder_utils import append_df, extract_route_data, init_finder  # noqa: E402
+from route_scores.aizynthfinder_utils import append_df, extract_route_data, init_finder  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
