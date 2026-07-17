@@ -38,10 +38,15 @@ from typing import Dict, List
 
 import pandas as pd
 
-# Add src/ to the path so aizynthfinder_utils, scoring_utils, etc. are importable.
-sys.path.append(str(Path(__file__).resolve().parent.parent.parent / "src"))
+# route_scores/ isn't pip-installed by the main uv-managed env (its heavy-dep
+# sibling mol_scores/ needs a separate scoring_env — see retro_scores/README.md),
+# so reach it directly via sys.path. Also needs the repo root itself on
+# sys.path for its own src.protac_synth.stock_utils reach-across.
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.append(str(_REPO_ROOT))
+sys.path.append(str(_REPO_ROOT / "retro_scores"))
 
-from aizynthfinder_utils import append_df, extract_route_data, init_finder  # noqa: E402
+from route_scores.aizynthfinder_utils import append_df, extract_route_data, init_finder  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
