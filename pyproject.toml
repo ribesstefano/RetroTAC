@@ -3,7 +3,7 @@ name = "protac-synthesizability"
 version = "0.1.0"
 description = "PROTAC synthesizability scoring pipeline"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = "==3.12.*"
 dependencies = [
     # Retrosynthesis
     "aizynthfinder==4.4.1",

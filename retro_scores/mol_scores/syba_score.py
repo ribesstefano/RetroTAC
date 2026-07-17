@@ -12,6 +12,8 @@ import pandas as pd
 
 from ._utils import sigmoid, safe_score
 
+COLUMNS = ["syba_score", "syba_score_scaled"]
+
 
 def compute(smiles: list) -> pd.DataFrame:
     print("Computing SYBA")

@@ -13,14 +13,14 @@ SCScore  : raw 1-5  (lower=easier)   -> scaled [0,1] (higher=easier)
 RAscore  : raw [0,1] (higher=easier)  -- no scaling
 SYBA     : raw unbounded (higher=easier) -> sigmoid [0,1]
 GASA     : binary 0=ES/1=HS + ES probability [0,1]
-FSscore  : raw [0,1] (higher=easier) -> sigmoid(raw/10)
+FSscore  : raw unbounded (higher=easier) -> batch min-max normalized [0,1]
 
 Usage
 -----
-    from protac_synth.retro_scores.scoring import compute_scores
+    from mol_scores.scoring import compute_scores
     df = compute_scores(df)               # df needs a 'molecule' column
     # or from the command line:
-    python -m protac_synth.retro_scores.scoring in.csv out.csv
+    python -m mol_scores.scoring in.csv out.csv
 """
 
 import numpy as np
@@ -28,18 +28,19 @@ import pandas as pd
 
 from . import sa_score, sc_score, ra_score, syba_score, gasa_score, fs_score
 
-
-# (name, module, output columns)  -- columns listed so we can NaN-fill on failure
+# Each scorer module owns its output column names via a module-level
+# COLUMNS constant, so the NaN-fallback path below can't drift out of sync
+# with what compute() actually returns.
 SCORERS = [
-    ("SA score", sa_score,   ["sa_score", "sa_score_scaled"]),
-    ("SCScore",  sc_score,   ["sc_score", "sc_score_scaled"]),
-    ("RAscore",  ra_score,   ["ra_score"]),
-    ("SYBA",     syba_score, ["syba_score", "syba_score_scaled"]),
-    ("GASA",     gasa_score, ["gasa_pred", "gasa_es_prob"]),
-    ("FSscore",  fs_score,   ["fs_score", "fs_score_scaled"]),
+    ("SA score", sa_score),
+    ("SCScore",  sc_score),
+    ("RAscore",  ra_score),
+    ("SYBA",     syba_score),
+    ("GASA",     gasa_score),
+    ("FSscore",  fs_score),
 ]
 
-SCORE_COLUMNS = [c for _, _, cols in SCORERS for c in cols]
+SCORE_COLUMNS = [col for _, module in SCORERS for col in module.COLUMNS]
 
 
 def compute_scores(df: pd.DataFrame, smiles_col: str = "molecule") -> pd.DataFrame:
@@ -48,17 +49,18 @@ def compute_scores(df: pd.DataFrame, smiles_col: str = "molecule") -> pd.DataFra
     n = len(smiles)
     print(f"Computing synthesizability scores for {n} molecules...")
 
-    for name, module, columns in SCORERS:
+    for name, module in SCORERS:
         print(f"  Computing {name}...", end=" ", flush=True)
         try:
             scores_df = module.compute(smiles)
             for col in scores_df.columns:
                 df[col] = scores_df[col].values
-            print("done.")
+            n_nan = int(scores_df.isna().any(axis=1).sum())
+            print(f"done ({n_nan}/{n} molecules NaN)." if n_nan else "done.")
         except Exception as e:
             print(f"FAILED ({e})")
             print(f"  WARNING: {name} scores will be NaN.")
-            for col in columns:
+            for col in module.COLUMNS:
                 df[col] = np.nan
 
     print("All scores computed.")
