@@ -4,6 +4,7 @@ mol_utils.py
 Framework-agnostic molecule handling shared by all models.
 """
 import numpy as np
+from collections import defaultdict
 from rdkit import Chem, RDLogger
 from rdkit.Chem import AllChem, Descriptors
 from rdkit.ML.Descriptors import MoleculeDescriptors
@@ -127,3 +128,22 @@ def compute_descriptors(smiles_list, calculator=DESCRIPTOR_CALCULATOR,
             vals = np.clip(vals, -1e4, 1e4)
             rows.append(vals.astype(np.float32))
     return np.vstack(rows)
+
+def scaffold_train_test_split(smiles_list, test_size=0.2, random_state=42, generic=False):
+    """Assign each molecule to 'train' or 'test' by scaffold groups.
+    Molecules sharing a scaffold land in the same split (no leakage)."""
+    scaffold_to_idx = defaultdict(list)
+    for i, smi in enumerate(smiles_list):
+        scaffold_to_idx[get_scaffold(smi, generic=generic)].append(i)
+
+    rng    = np.random.default_rng(random_state)
+    groups = list(scaffold_to_idx.keys())
+    rng.shuffle(groups)
+
+    n_test, test_idx = int(np.floor(test_size * len(smiles_list))), set()
+    for sc in groups:
+        if len(test_idx) >= n_test:
+            break
+        test_idx.update(scaffold_to_idx[sc])
+
+    return np.array(["test" if i in test_idx else "train" for i in range(len(smiles_list))])
