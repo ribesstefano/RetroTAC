@@ -7,7 +7,7 @@ and a scaled value. Each scorer only needs a SMILES string, no retrosynthesis
 route (contrast with the sibling `route_scores` package).
 
 Installed and run separately from the main `protac_synth` package (see
-SETUP_scoring.md at the repo root): the dependency stack here (TF 2.8 +
+README.md in this directory): the dependency stack here (TF 2.8 +
 torch 2.0 + dgl 2.1 + old xgboost, three git-cloned/manually-fetched
 models) is fragile and Python-3.10-pinned, so it lives in its own
 `scoring_env` rather than the main uv-managed environment.
