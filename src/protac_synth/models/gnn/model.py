@@ -9,7 +9,7 @@ Requires: chemprop>=2.2.0, lightning. Download the CheMeleon weights once:
     urlretrieve("https://zenodo.org/records/15460715/files/chemeleon_mp.pt", "chemeleon_mp.pt")
 """
 import numpy as np
-import torch
+import torch; print("cuda available:", torch.cuda.is_available(), flush=True)
 from pathlib import Path
  
 from lightning import pytorch as pl
@@ -53,17 +53,19 @@ class CheMeleonRegressor:
         # ── datasets (ChemProp scales targets internally) ──────────────────
         train_dset = cpdata.MoleculeDataset(self._datapoints(smiles_list, y), featurizer)
         scaler     = train_dset.normalize_targets()
+        print("built datasets...", flush=True) 
  
         if smiles_val is not None:
             val_dset = cpdata.MoleculeDataset(self._datapoints(smiles_val, y_val), featurizer)
             val_dset.normalize_targets(scaler)
         else:
+            all_dp = self._datapoints(smiles_list, y) 
             rng   = np.random.default_rng(self.random_state)
             idx   = rng.permutation(len(smiles_list))
             n_val = max(1, int(0.1 * len(smiles_list)))
             v, t  = idx[:n_val], idx[n_val:]
-            tr_dp = [self._datapoints(smiles_list, y)[i] for i in t]
-            va_dp = [self._datapoints(smiles_list, y)[i] for i in v]
+            tr_dp = [all_dp[i] for i in t]                     
+            va_dp = [all_dp[i] for i in v]
             train_dset = cpdata.MoleculeDataset(tr_dp, featurizer)
             scaler     = train_dset.normalize_targets()
             val_dset   = cpdata.MoleculeDataset(va_dp, featurizer)
@@ -78,6 +80,8 @@ class CheMeleonRegressor:
         mp   = cpnn.BondMessagePassing(**ckpt["hyper_parameters"])
         mp.load_state_dict(ckpt["state_dict"])
         agg  = cpnn.MeanAggregation()
+
+        print("loaded CheMeleon backbone...", flush=True)
  
         output_transform = cpnn.UnscaleTransform.from_standard_scaler(scaler)
         ffn = cpnn.RegressionFFN(
@@ -96,10 +100,11 @@ class CheMeleonRegressor:
         ckpt_cb    = ModelCheckpoint(dirpath=tmpdir, monitor="val_loss", mode="min",
                          save_top_k=1, filename="best")
         trainer = pl.Trainer(
-            accelerator="auto", devices=1, max_epochs=self.max_epochs,
+            accelerator="gpu", devices=1, max_epochs=self.max_epochs,
             logger=False, enable_checkpointing=True, enable_progress_bar=False,
             callbacks=[early, ckpt_cb],
         )
+        print("starting trainer.fit...", flush=True) 
         trainer.fit(mpnn, train_loader, val_loader)
 
         # restore the BEST-val weights (EarlyStopping alone leaves the last epoch)
