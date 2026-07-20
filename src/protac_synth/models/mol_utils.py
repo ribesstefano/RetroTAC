@@ -48,12 +48,25 @@ def compute_fingerprints(mols, fp_size: int = 512, fp_radius: int = 3) -> np.nda
     """Morgan fingerprints for pre-standardized mols; zero-vector row for None."""
     gen = AllChem.GetMorganGenerator(radius=fp_radius, fpSize=fp_size, includeChirality=True)
     fps = []
-    for mol in mols:
+    for mol in tqdm(mols, desc="Computing fingerprints", unit="mol"):
         if mol is None:
             fps.append(np.zeros(fp_size, dtype=np.float32))
         else:
             fps.append(gen.GetFingerprintAsNumPy(Chem.AddHs(mol)).astype(np.float32))
     return np.vstack(fps)
+
+
+def compute_descriptors(mols, calculator=DESCRIPTOR_CALCULATOR,
+                        n_desc: int = len(DESCRIPTOR_NAMES)) -> np.ndarray:
+    """RDKit descriptors for pre-standardized mols; NaN row for None."""
+    rows = []
+    for mol in tqdm(mols, desc="Computing descriptors", unit="mol"):
+        if mol is None:
+            rows.append(np.full(n_desc, np.nan, dtype=np.float32))
+        else:
+            vals = np.clip(np.array(calculator.CalcDescriptors(mol), dtype=np.float64), -1e4, 1e4)
+            rows.append(vals.astype(np.float32))
+    return np.vstack(rows)
 
 
 def sanitize_matrix(X: np.ndarray) -> np.ndarray:
@@ -112,18 +125,6 @@ def get_scaffold(smiles: str, generic: bool = False) -> str:
     else:
         scaffold = Chem.MolToSmiles(GetScaffoldForMol(mol))
     return scaffold if len(scaffold) > 0 else smiles
-
-def compute_descriptors(mols, calculator=DESCRIPTOR_CALCULATOR,
-                        n_desc: int = len(DESCRIPTOR_NAMES)) -> np.ndarray:
-    """RDKit descriptors for pre-standardized mols; NaN row for None."""
-    rows = []
-    for mol in mols:
-        if mol is None:
-            rows.append(np.full(n_desc, np.nan, dtype=np.float32))
-        else:
-            vals = np.clip(np.array(calculator.CalcDescriptors(mol), dtype=np.float64), -1e4, 1e4)
-            rows.append(vals.astype(np.float32))
-    return np.vstack(rows)
 
 def scaffold_train_test_split(smiles_list, test_size=0.2, random_state=42, generic=False):
     """Assign each molecule to 'train' or 'test' by scaffold groups.
