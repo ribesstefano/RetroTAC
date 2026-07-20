@@ -6,7 +6,6 @@ import xgboost as xgb
 import skops.io as sio
 from sklearn.preprocessing import QuantileTransformer
 from sklearn.metrics import r2_score
-from rdkit.Chem import Descriptors
 
 from mol_utils import compute_fingerprints, sanitize_matrix, make_preprocessor
 from rdkit import RDLogger
@@ -22,10 +21,6 @@ class XGBoostRegressor():
         use_fingerprints: bool = True,
         use_descriptors: bool = True,
         xgb_params: dict = None,
-        descriptors_list: List[str] = [
-            name for name, _ in Descriptors._descList
-            if name != "Ipc"  # Ipc produces pathologically large values
-        ],
         uncharge: bool = False,
         random_state: int = 42,
     ):
@@ -39,7 +34,6 @@ class XGBoostRegressor():
         self.use_fingerprints = use_fingerprints
         self.use_descriptors = use_descriptors
         self.xgb_params = xgb_params or {}
-        self.descriptors_list = descriptors_list
         self.uncharge = uncharge
         self.random_state = random_state
 
