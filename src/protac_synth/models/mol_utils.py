@@ -38,24 +38,23 @@ def standardize(smiles: str, uncharge: bool = False):
             mol = u.uncharge(mol)
     except Exception:
         return None
-
     return mol
 
-def compute_fingerprints(smiles_list, fp_size: int = 512, fp_radius: int = 3) -> np.ndarray:
-    """Morgan fingerprints for a list of SMILES; zero-vector row for unparseable mols.
-    Returns array shape [len(smiles_list), fp_size].
-    """
+def standardize_all(smiles_list, uncharge: bool = False):
+    """Standardize a list of SMILES once -> list of RDKit Mol (or None)."""
+    return [standardize(s, uncharge) for s in smiles_list]
+
+def compute_fingerprints(mols, fp_size: int = 512, fp_radius: int = 3) -> np.ndarray:
+    """Morgan fingerprints for pre-standardized mols; zero-vector row for None."""
     gen = AllChem.GetMorganGenerator(radius=fp_radius, fpSize=fp_size, includeChirality=True)
     fps = []
-    for smi in smiles_list:
-        mol = standardize(smi)
+    for mol in mols:
         if mol is None:
             fps.append(np.zeros(fp_size, dtype=np.float32))
         else:
-            mol = Chem.AddHs(mol)
-            fp = gen.GetFingerprintAsNumPy(mol).astype(np.float32)
-            fps.append(fp)
+            fps.append(gen.GetFingerprintAsNumPy(Chem.AddHs(mol)).astype(np.float32))
     return np.vstack(fps)
+
 
 def sanitize_matrix(X: np.ndarray) -> np.ndarray:
     """Replace inf with NaN, clip to float32-safe range."""
@@ -114,18 +113,15 @@ def get_scaffold(smiles: str, generic: bool = False) -> str:
         scaffold = Chem.MolToSmiles(GetScaffoldForMol(mol))
     return scaffold if len(scaffold) > 0 else smiles
 
-def compute_descriptors(smiles_list, calculator=DESCRIPTOR_CALCULATOR,
+def compute_descriptors(mols, calculator=DESCRIPTOR_CALCULATOR,
                         n_desc: int = len(DESCRIPTOR_NAMES)) -> np.ndarray:
-    """RDKit descriptors for a list of SMILES; NaN row for unparseable mols.
-    Returns array shape [len(smiles_list), n_desc], float32."""
+    """RDKit descriptors for pre-standardized mols; NaN row for None."""
     rows = []
-    for smi in smiles_list:
-        mol = standardize(smi)
+    for mol in mols:
         if mol is None:
             rows.append(np.full(n_desc, np.nan, dtype=np.float32))
         else:
-            vals = np.array(calculator.CalcDescriptors(mol), dtype=np.float64)
-            vals = np.clip(vals, -1e4, 1e4)
+            vals = np.clip(np.array(calculator.CalcDescriptors(mol), dtype=np.float64), -1e4, 1e4)
             rows.append(vals.astype(np.float32))
     return np.vstack(rows)
 

@@ -148,10 +148,10 @@ def _load_model(prefix: str):
 
 
 def _test_features(smiles):
-    """Compute the tabular features the XGB/MLP need for the test set."""
-    from mol_utils import compute_fingerprints, compute_descriptors
-    X_fp   = compute_fingerprints(smiles, FP_SIZE, FP_RADIUS) if USE_FINGERPRINTS else None
-    X_desc = compute_descriptors(smiles) if USE_DESCRIPTORS else None
+    from mol_utils import standardize_all, compute_fingerprints, compute_descriptors
+    mols   = standardize_all(smiles)
+    X_fp   = compute_fingerprints(mols, FP_SIZE, FP_RADIUS) if USE_FINGERPRINTS else None
+    X_desc = compute_descriptors(mols) if USE_DESCRIPTORS else None
     return X_fp, X_desc
 
 

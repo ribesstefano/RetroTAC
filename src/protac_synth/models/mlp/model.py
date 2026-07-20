@@ -104,7 +104,7 @@ class TorchMLPRegressor:
     def _featurize(self, smiles_list, X_fp=None, X_desc=None):
         if self.use_fingerprints:
             if X_fp is None:
-                X_fp = compute_fingerprints(smiles_list, self.fp_size, self.fp_radius)
+                X_fp = compute_fingerprints(standardize_all(smiles_list), self.fp_size, self.fp_radius)
             X_fp = sanitize_matrix(X_fp)
         if self.use_descriptors and X_desc is None:
             raise ValueError("use_descriptors=True but no descriptor matrix was provided.")

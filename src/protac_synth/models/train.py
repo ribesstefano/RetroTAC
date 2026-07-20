@@ -87,15 +87,15 @@ def _load_or_compute(path, compute_fn, n_expected):
  
  
 def cache_features(df_train, input_path):
-    """Model-agnostic: load (or compute+cache) fp/desc from the config flags.
-    Features are identical for every tabular model, so the cache is shared."""
     smiles = df_train["molecule"].tolist()
+    mols   = standardize_all(smiles)          # <-- standardize ONCE
     fp_path, desc_path = feature_paths(input_path)
+
     X_fp = _load_or_compute(
-        fp_path, lambda: compute_fingerprints(smiles, FP_SIZE, FP_RADIUS), len(df_train)
+        fp_path, lambda: compute_fingerprints(mols, FP_SIZE, FP_RADIUS), len(df_train)
     ) if USE_FINGERPRINTS else None
     X_desc = _load_or_compute(
-        desc_path, lambda: compute_descriptors(smiles), len(df_train)
+        desc_path, lambda: compute_descriptors(mols), len(df_train)
     ) if USE_DESCRIPTORS else None
     return X_fp, X_desc
  
