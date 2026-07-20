@@ -486,6 +486,8 @@ def main():
             are missing in single-fold mode.
     """
     args     = parse_args()
+    if not Path(args.input).exists():
+        raise SystemExit(f"Input CSV not found: {args.input}")
     df_train = pd.read_csv(args.input)
 
     # split: model-agnostic, one-time -> write CSVs and exit
