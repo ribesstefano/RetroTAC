@@ -1,39 +1,35 @@
-from xgb.model import XGBoostRegressor
-from pathlib import Path
-import yaml
-CONFIG_PATH = Path(__file__).parent.parent / "models_config.yaml"
-with open(CONFIG_PATH) as f:
-    CFG = yaml.safe_load(f)
+from protac_synth.models.xgb.model import XGBoostRegressor
 
-FP_SIZE          = CFG["features"]["fp_size"]
-FP_RADIUS        = CFG["features"]["fp_radius"]
-USE_FINGERPRINTS = CFG["features"]["use_fingerprints"]
-USE_DESCRIPTORS  = CFG["features"]["use_descriptors"]
 
 def build_xgb(trial, fp_radius, smiles_tr, y_tr, X_fp_tr, X_desc_tr,
-              smiles_val=None, y_val=None, X_fp_val=None, X_desc_val=None, **kwargs):
+              smiles_val=None, y_val=None, X_fp_val=None, X_desc_val=None,
+              fp_size=512, use_fingerprints=True, use_descriptors=True, **kwargs):
     """Build and fit an XGBoost regressor.
 
     Args:
-        trial:      Optuna trial or FixedTrial with hyperparameter values.
-        fp_radius:  Morgan fingerprint radius.
-        smiles_tr:  Training SMILES strings.
-        y_tr:       Training targets.
-        X_fp_tr:    Training fingerprint matrix or None.
-        X_desc_tr:  Training descriptor matrix or None.
-        smiles_val: Validation SMILES for early stopping (optional).
-        y_val:      Validation targets for early stopping (optional).
-        X_desc_val: Validation descriptor matrix (optional).
+        trial:            Optuna trial or FixedTrial with hyperparameter values.
+        fp_radius:        Morgan fingerprint radius.
+        smiles_tr:        Training SMILES strings.
+        y_tr:             Training targets.
+        X_fp_tr:          Training fingerprint matrix or None.
+        X_desc_tr:        Training descriptor matrix or None.
+        smiles_val:       Validation SMILES for early stopping (optional).
+        y_val:            Validation targets for early stopping (optional).
+        X_fp_val:         Validation fingerprint matrix (optional).
+        X_desc_val:       Validation descriptor matrix (optional).
+        fp_size:          Morgan fingerprint bit size.
+        use_fingerprints: Whether the feature matrix includes fingerprints.
+        use_descriptors:  Whether the feature matrix includes RDKit descriptors.
 
     Returns:
-        Fitted XGBMolPropertyRegressor.
+        Fitted XGBoostRegressor.
     """
     return XGBoostRegressor(
-        fp_size          = FP_SIZE,
+        fp_size          = fp_size,
         fp_radius        = fp_radius,
         svd_components   = trial.suggest_int("svd_components", 0, 128),
-        use_fingerprints = USE_FINGERPRINTS,
-        use_descriptors  = USE_DESCRIPTORS,
+        use_fingerprints = use_fingerprints,
+        use_descriptors  = use_descriptors,
         xgb_params       = {
             "n_estimators":     trial.suggest_int("n_estimators", 200, 3000),
             "max_depth":        trial.suggest_int("max_depth", 3, 8),
