@@ -6,6 +6,7 @@ best-weight restore, Optuna pruning), the training loop is
 replaced by a LightningModule + pl.Trainer.
 """
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import List, Optional
@@ -21,7 +22,11 @@ from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from sklearn.preprocessing import QuantileTransformer
 from sklearn.metrics import r2_score
 
-from mol_utils import compute_fingerprints, sanitize_matrix, make_preprocessor
+sys.path.append(str(Path(__file__).resolve().parents[3]))   # -> src/
+
+from protac_synth.chem_utils import (  # noqa: E402
+    standardize_all, compute_fingerprints, sanitize_matrix, make_preprocessor,
+)
 
 
 # ── tabular dataset ─────────────────────────────────────────────────────────

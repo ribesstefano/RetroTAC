@@ -20,6 +20,7 @@ Usage
 import argparse
 import json
 import pickle
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +29,8 @@ import yaml
 import autorank
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
+sys.path.append(str(Path(__file__).resolve().parents[2] / "src"))   # -> chem_utils
+
 # ── paths + config (anchored to repo root, same as train.py) ────────────────
 _ROOT       = Path(__file__).parents[3]                 # PROTAC-Synthesizability/
 OUTPUT_ROOT = _ROOT / "data" / "outputs"
@@ -35,7 +38,7 @@ CV_DIR      = OUTPUT_ROOT / "cv"
 MODELS_DIR  = OUTPUT_ROOT / "models"
 RESULTS_DIR = OUTPUT_ROOT / "results"
 
-with open(Path(__file__).parent / "models_config.yaml") as f:
+with open(Path(__file__).resolve().parents[2] / "config" / "models_config.yaml") as f:
     _CFG = yaml.safe_load(f)
 CV_SEEDS         = _CFG["cross_validation"]["seeds"]
 N_FOLDS          = _CFG["cross_validation"]["n_folds"]
@@ -136,19 +139,19 @@ def _load_model(prefix: str):
     kind = prefix.split("_")[0]
     base = str(MODELS_DIR / prefix / f"{prefix}_final")
     if kind == "xgb":
-        from xgb.model import XGBoostRegressor
+        from protac_synth.models.xgb.model import XGBoostRegressor
         return XGBoostRegressor.load(base)
     if kind == "mlp":
-        from mlp.model import TorchMLPRegressor
+        from protac_synth.models.mlp.model import TorchMLPRegressor
         return TorchMLPRegressor.load(base)
     if kind == "gnn":
-        from gnn.model import CheMeleonRegressor
+        from protac_synth.models.gnn.model import CheMeleonRegressor
         return CheMeleonRegressor.load(base)
     raise ValueError(f"Unknown model kind: {kind}")
 
 
 def _test_features(smiles):
-    from mol_utils import standardize_all, compute_fingerprints, compute_descriptors
+    from protac_synth.chem_utils import standardize_all, compute_fingerprints, compute_descriptors
     mols   = standardize_all(smiles)
     X_fp   = compute_fingerprints(mols, FP_SIZE, FP_RADIUS) if USE_FINGERPRINTS else None
     X_desc = compute_descriptors(mols) if USE_DESCRIPTORS else None

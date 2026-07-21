@@ -4,16 +4,10 @@ train.py
 5x5 nested scaffold cross-validation for the PROTAC synthesizability
 surrogate models (xgb / mlp / gnn), model-agnostic.
 
-Two run modes (dispatched in main):
-  * single-fold : --seed S --fold F  -> tune + evaluate ONE outer fold, save JSON
-  * aggregate   : --aggregate        -> collect the 25 fold JSONs, retrain final
-
-Run one fold:
-    python train.py --model xgb --input data.csv --seed 0 --fold 0 --prefix v1
-Aggregate after all 25 folds:
-    python train.py --model xgb --input data.csv --aggregate --prefix v1
+Library only — no argparse/main and no module-level paths. The CLI entry
+point is scripts/models/train.py, which supplies every path and config
+value as an explicit argument.
 """
-import argparse
 import json
 import os
 import shutil
@@ -23,29 +17,9 @@ from pathlib import Path
 import yaml
 import numpy as np
 import optuna
-import pandas as pd
 from optuna.trial import FixedTrial
 
-from mol_utils import (
-    standardize_all, compute_fingerprints, compute_descriptors, get_scaffold,
-)
-
-with open(Path(__file__).parent / "models_config.yaml") as f:
-    _CFG = yaml.safe_load(f)
-
-FP_SIZE          = _CFG["features"]["fp_size"]
-FP_RADIUS        = _CFG["features"]["fp_radius"]
-USE_FINGERPRINTS = _CFG["features"]["use_fingerprints"]
-USE_DESCRIPTORS  = _CFG["features"]["use_descriptors"]
-TARGET           = _CFG["target"]
-CV_SEEDS         = _CFG["cross_validation"]["seeds"]
-N_FOLDS          = _CFG["cross_validation"]["n_folds"]
-
-# ── Paths (constructed only — no I/O at import; dirs created in main) ────────
-_ROOT       = Path(__file__).parents[3]        # PROTAC-Synthesizability/ (repo root)
-OUTPUT_ROOT = _ROOT / "data" / "outputs"
-CV_DIR      = OUTPUT_ROOT / "cv"
-MODELS_DIR  = OUTPUT_ROOT / "models"
+from protac_synth.chem_utils import standardize_all, compute_fingerprints, compute_descriptors
 
 
 # ── Model dispatch (lazy import so a run pulls in only its backend) ──────────
@@ -65,31 +39,33 @@ def get_build_fn(model: str):
         ValueError: If `model` is not one of the supported names.
     """
     if model == "xgb":
-        from xgb.hpo import build_xgb
+        from protac_synth.models.xgb.hpo import build_xgb
         return build_xgb
     if model == "mlp":
-        from mlp.hpo import build_mlp
+        from protac_synth.models.mlp.hpo import build_mlp
         return build_mlp
     if model == "gnn":
-        from gnn.hpo import build_gnn
+        from protac_synth.models.gnn.hpo import build_gnn
         return build_gnn
     raise ValueError(f"Invalid model name: {model}")
 
 
 # ── Feature caching ─────────────────────────────────────────────────────────
-def feature_paths(input_path):
+def feature_paths(input_path, fp_radius, fp_size):
     """Build the cache file paths for fingerprints/descriptors, next to the input CSV.
 
     FP params are baked into the name so a config change can't reuse a stale cache.
 
     Args:
         input_path: Path to the input CSV; its stem is reused for the cache names.
+        fp_radius: Morgan fingerprint radius, baked into the fp cache filename.
+        fp_size: Morgan fingerprint bit size, baked into the fp cache filename.
 
     Returns:
         Tuple (fp_path, desc_path) of Path objects for the .npy caches.
     """
     stem = str(Path(input_path).with_suffix(""))
-    fp_path   = Path(f"{stem}_fp_r{FP_RADIUS}_{FP_SIZE}.npy")
+    fp_path   = Path(f"{stem}_fp_r{fp_radius}_{fp_size}.npy")
     desc_path = Path(f"{stem}_desc.npy")
     return fp_path, desc_path
 
@@ -121,33 +97,37 @@ def _load_or_compute(path, compute_fn, n_expected):
     return arr
 
 
-def cache_features(df_train, input_path):
-    """Model-agnostic: load (or compute+cache) fp/desc from the config flags.
+def cache_features(df_train, input_path, fp_radius, fp_size, use_fingerprints, use_descriptors):
+    """Model-agnostic: load (or compute+cache) fp/desc per the given feature flags.
 
     SMILES are standardized ONCE and the mols reused for both feature types.
 
     Args:
         df_train: DataFrame with a "molecule" column of SMILES.
         input_path: Path to the input CSV, used to locate the feature caches.
+        fp_radius: Morgan fingerprint radius.
+        fp_size: Morgan fingerprint bit size.
+        use_fingerprints: Whether to compute/cache fingerprints.
+        use_descriptors: Whether to compute/cache RDKit descriptors.
 
     Returns:
         Tuple (X_fp, X_desc); each is a numpy array, or None when disabled by
-        USE_FINGERPRINTS / USE_DESCRIPTORS.
+        use_fingerprints / use_descriptors.
     """
     smiles = df_train["molecule"].tolist()
     mols   = standardize_all(smiles)                    # standardize once, reuse for both
-    fp_path, desc_path = feature_paths(input_path)
+    fp_path, desc_path = feature_paths(input_path, fp_radius, fp_size)
 
     X_fp = _load_or_compute(
-        fp_path, lambda: compute_fingerprints(mols, FP_SIZE, FP_RADIUS), len(df_train)
-    ) if USE_FINGERPRINTS else None
+        fp_path, lambda: compute_fingerprints(mols, fp_size, fp_radius), len(df_train)
+    ) if use_fingerprints else None
     X_desc = _load_or_compute(
         desc_path, lambda: compute_descriptors(mols), len(df_train)
-    ) if USE_DESCRIPTORS else None
+    ) if use_descriptors else None
     return X_fp, X_desc
 
 
-def prepare_inputs(model, df_train, input_path):
+def prepare_inputs(model, df_train, input_path, fp_radius, fp_size, use_fingerprints, use_descriptors):
     """Assemble training-time inputs for the chosen model.
 
     Tabular models load the shared feature cache; the GNN builds graphs inside
@@ -157,18 +137,22 @@ def prepare_inputs(model, df_train, input_path):
         model: Model key ("xgb", "mlp", or "gnn").
         df_train: DataFrame with a "molecule" column of SMILES.
         input_path: Path to the input CSV, used to locate the feature caches.
+        fp_radius: Morgan fingerprint radius.
+        fp_size: Morgan fingerprint bit size.
+        use_fingerprints: Whether to compute/cache fingerprints.
+        use_descriptors: Whether to compute/cache RDKit descriptors.
 
     Returns:
         Tuple (X_fp, X_desc); (None, None) for the GNN, otherwise the cached
-        feature arrays (each possibly None per the config flags).
+        feature arrays (each possibly None per the feature flags).
     """
     if model == "gnn":
         return None, None
-    return cache_features(df_train, input_path)
+    return cache_features(df_train, input_path, fp_radius, fp_size, use_fingerprints, use_descriptors)
 
 
 # ── Scaffold-grouped fold indices ───────────────────────────────────────────
-def get_fold_indices(df_train, seed, fold_idx, n_folds=N_FOLDS, inner_val_frac=0.2):
+def get_fold_indices(df_train, seed, fold_idx, n_folds, inner_val_frac=0.2):
     """Build scaffold-grouped index arrays for one outer fold of nested CV.
 
     Scaffolds are shuffled (seeded) and greedily balanced across `n_folds`; the
@@ -180,7 +164,7 @@ def get_fold_indices(df_train, seed, fold_idx, n_folds=N_FOLDS, inner_val_frac=0
         df_train: DataFrame with a "scaffolds" column (one scaffold per row).
         seed: Seed for the outer scaffold shuffle (inner uses seed+fold_idx+1000).
         fold_idx: Which fold (0..n_folds-1) serves as the outer-val set.
-        n_folds: Number of outer folds. Defaults to N_FOLDS.
+        n_folds: Number of outer folds.
         inner_val_frac: Fraction of the outer-train rows held out for inner-val.
 
     Returns:
@@ -227,18 +211,19 @@ def get_fold_indices(df_train, seed, fold_idx, n_folds=N_FOLDS, inner_val_frac=0
 # ── Inner Optuna tuning ─────────────────────────────────────────────────────
 def tune_inner_fold(build_fn, df_train, X_fp, X_desc,
                     inner_train_idx, inner_val_idx,
-                    seed, fold_idx, prefix, n_trials=25) -> dict:
+                    seed, fold_idx, prefix, cv_dir, target, fp_radius,
+                    n_trials=25, build_kwargs=None) -> dict:
     """Run the inner Optuna loop for one outer fold and return the best params.
 
     Each trial builds a model on the inner-train split and is scored (R2) on the
     inner-val split. The study is backed by a node-local SQLite DB (reliable on
     the compute node) with a whole-file snapshot copied to /proj after every
     trial, so a preempted job resumes instead of restarting. Also writes the
-    trials dataframe and best_params JSON under CV_DIR/prefix.
+    trials dataframe and best_params JSON under cv_dir/prefix.
 
     Args:
         build_fn: Model factory from get_build_fn; called once per trial.
-        df_train: Full training DataFrame ("molecule" + TARGET columns).
+        df_train: Full training DataFrame ("molecule" + target columns).
         X_fp: Fingerprint feature matrix, or None.
         X_desc: Descriptor feature matrix, or None.
         inner_train_idx: Position array for the inner-train rows.
@@ -246,20 +231,26 @@ def tune_inner_fold(build_fn, df_train, X_fp, X_desc,
         seed: Outer seed; also seeds the TPE sampler (seed+fold_idx).
         fold_idx: Outer fold index, used in filenames and the sampler seed.
         prefix: Run/model prefix used for the study name and output dir.
+        cv_dir: Root directory for per-fold CV outputs.
+        target: Name of the target column in df_train.
+        fp_radius: Morgan fingerprint radius, forwarded to build_fn.
         n_trials: Number of Optuna trials. Defaults to 25.
+        build_kwargs: Model-specific config forwarded to build_fn (e.g. fp_size,
+            use_fingerprints, use_descriptors for tabular models; max_epochs,
+            patience, chemeleon_weights for the GNN).
 
     Returns:
         The best hyperparameters (Optuna study.best_params dict).
     """
+    build_kwargs = build_kwargs or {}
     smiles_itr  = df_train.iloc[inner_train_idx]["molecule"].tolist()
     smiles_ival = df_train.iloc[inner_val_idx]["molecule"].tolist()
-    y_itr  = df_train.iloc[inner_train_idx][[TARGET]].values
-    y_ival = df_train.iloc[inner_val_idx][[TARGET]].values
+    y_itr  = df_train.iloc[inner_train_idx][[target]].values
+    y_ival = df_train.iloc[inner_val_idx][[target]].values
     X_fp_itr    = X_fp[inner_train_idx]  if X_fp  is not None else None
     X_fp_ival   = X_fp[inner_val_idx]    if X_fp  is not None else None
     X_desc_itr  = X_desc[inner_train_idx] if X_desc is not None else None
     X_desc_ival = X_desc[inner_val_idx]   if X_desc is not None else None
-    fp_radius = FP_RADIUS
 
     def objective(trial):
         m = build_fn(
@@ -267,13 +258,14 @@ def tune_inner_fold(build_fn, df_train, X_fp, X_desc,
             smiles_itr, y_itr, X_fp_itr, X_desc_itr,
             smiles_val=smiles_ival, y_val=y_ival,
             X_fp_val=X_fp_ival, X_desc_val=X_desc_ival,
+            **build_kwargs,
         )
         return float(m.score(smiles_ival, y_ival, X_fp=X_fp_ival, X_desc=X_desc_ival))
 
     # ── node-local DB (reliable SQLite) + durable /proj snapshot (resume) ───
     tmp_dir    = os.environ.get("TMPDIR", "/tmp")
     local_db   = f"{tmp_dir}/{prefix}_seed{seed}_fold{fold_idx}.db"
-    out_dir    = CV_DIR / prefix
+    out_dir    = cv_dir / prefix
     out_dir.mkdir(parents=True, exist_ok=True)
     persist_db = out_dir / f"{prefix}_seed{seed}_fold{fold_idx}.db"
 
@@ -303,7 +295,8 @@ def tune_inner_fold(build_fn, df_train, X_fp, X_desc,
 
 
 # ── One outer fold: tune -> refit -> score -> save ──────────────────────────
-def run_single_fold(build_fn, df_train, X_fp, X_desc, seed, fold_idx, prefix, n_trials=25):
+def run_single_fold(build_fn, df_train, X_fp, X_desc, seed, fold_idx, prefix,
+                    cv_dir, target, fp_radius, n_folds, n_trials=25, build_kwargs=None):
     """Evaluate one outer fold end-to-end: tune on the inner split, refit on the
     full fold-train with the best params, score (R2) on the held-out fold-val,
     and persist the result to score_seed{seed}_fold{fold_idx}.json.
@@ -313,48 +306,58 @@ def run_single_fold(build_fn, df_train, X_fp, X_desc, seed, fold_idx, prefix, n_
 
     Args:
         build_fn: Model factory from get_build_fn.
-        df_train: Full training DataFrame ("molecule", "scaffolds", TARGET).
+        df_train: Full training DataFrame ("molecule", "scaffolds", target).
         X_fp: Fingerprint feature matrix, or None.
         X_desc: Descriptor feature matrix, or None.
         seed: Outer seed for this fold.
-        fold_idx: Outer fold index (0..N_FOLDS-1).
+        fold_idx: Outer fold index (0..n_folds-1).
         prefix: Run/model prefix used for output paths.
+        cv_dir: Root directory for per-fold CV outputs.
+        target: Name of the target column in df_train.
+        fp_radius: Morgan fingerprint radius, forwarded to build_fn.
+        n_folds: Total number of outer folds.
         n_trials: Inner-tuning trial budget. Defaults to 25.
+        build_kwargs: Model-specific config forwarded to build_fn (e.g. fp_size,
+            use_fingerprints, use_descriptors for tabular models; max_epochs,
+            patience, chemeleon_weights for the GNN).
 
     Returns:
         The outer-val R2 (float) for this fold.
     """
-    score_path = CV_DIR / prefix / f"score_seed{seed}_fold{fold_idx}.json"
+    score_path = cv_dir / prefix / f"score_seed{seed}_fold{fold_idx}.json"
     if score_path.exists():
         print(f"[{prefix}] seed {seed} fold {fold_idx} already done, skipping")
         with open(score_path) as f:
             return json.load(f)["r2"]
 
+    build_kwargs = build_kwargs or {}
     fold_train_idx, fold_val_idx, inner_train_idx, inner_val_idx = \
-        get_fold_indices(df_train, seed, fold_idx)
+        get_fold_indices(df_train, seed, fold_idx, n_folds)
 
     best_params = tune_inner_fold(
         build_fn, df_train, X_fp, X_desc,
         inner_train_idx, inner_val_idx,
-        seed, fold_idx, prefix, n_trials,
+        seed, fold_idx, prefix, cv_dir, target, fp_radius, n_trials,
+        build_kwargs=build_kwargs,
     )
 
     smiles_tr  = df_train.iloc[fold_train_idx]["molecule"].tolist()
     smiles_val = df_train.iloc[fold_val_idx]["molecule"].tolist()
-    y_tr       = df_train.iloc[fold_train_idx][[TARGET]].values
-    y_val      = df_train.iloc[fold_val_idx][[TARGET]].values
+    y_tr       = df_train.iloc[fold_train_idx][[target]].values
+    y_val      = df_train.iloc[fold_val_idx][[target]].values
     X_fp_tr    = X_fp[fold_train_idx]  if X_fp  is not None else None
     X_fp_val   = X_fp[fold_val_idx]    if X_fp  is not None else None
     X_desc_tr  = X_desc[fold_train_idx] if X_desc is not None else None
     X_desc_val = X_desc[fold_val_idx]   if X_desc is not None else None
 
-    fp_radius   = best_params.pop("fp_radius", FP_RADIUS)
-    fixed_trial = FixedTrial(best_params)
+    fold_fp_radius = best_params.pop("fp_radius", fp_radius)
+    fixed_trial    = FixedTrial(best_params)
     m = build_fn(
-        fixed_trial, fp_radius,
+        fixed_trial, fold_fp_radius,
         smiles_tr, y_tr, X_fp_tr, X_desc_tr,
         smiles_val=smiles_val, y_val=y_val,
         X_fp_val=X_fp_val, X_desc_val=X_desc_val,
+        **build_kwargs,
     )
     score = float(m.score(smiles_val, y_val, X_fp=X_fp_val, X_desc=X_desc_val))
 
@@ -366,33 +369,45 @@ def run_single_fold(build_fn, df_train, X_fp, X_desc, seed, fold_idx, prefix, n_
     return score
 
 
-# ── Aggregate the 25 folds -> mean/std + final model ────────────────────────
-def aggregate_results(build_fn, df_train, X_fp, X_desc, prefix):
-    """Collect all 25 outer-fold JSONs, report mean +/- std R2, and retrain the
-    final model on the full dataset.
+# ── Aggregate the folds -> mean/std + final model ───────────────────────────
+def aggregate_results(build_fn, df_train, X_fp, X_desc, prefix,
+                      cv_dir, models_dir, cv_seeds, n_folds, target, fp_radius,
+                      build_kwargs=None):
+    """Collect all cv_seeds x n_folds outer-fold JSONs, report mean +/- std R2,
+    and retrain the final model on the full dataset.
 
     The final hyperparameters are the ones with the best inner-val R2 across
     folds (chosen by inner, never outer, score to avoid leakage). Saves the
-    fitted model and a *_hparams.yaml CV summary under MODELS_DIR/prefix.
+    fitted model and a *_hparams.yaml CV summary under models_dir/prefix.
 
     Args:
         build_fn: Model factory from get_build_fn.
-        df_train: Full training DataFrame ("molecule" + TARGET columns).
+        df_train: Full training DataFrame ("molecule" + target columns).
         X_fp: Fingerprint feature matrix, or None.
         X_desc: Descriptor feature matrix, or None.
         prefix: Run/model prefix identifying the fold JSONs and output dir.
+        cv_dir: Root directory the fold JSONs were written under.
+        models_dir: Root directory the final model is saved under.
+        cv_seeds: Outer seeds used during single-fold runs.
+        n_folds: Total number of outer folds per seed.
+        target: Name of the target column in df_train.
+        fp_radius: Fallback Morgan fingerprint radius if a fold's best params omit it.
+        build_kwargs: Model-specific config forwarded to build_fn (e.g. fp_size,
+            use_fingerprints, use_descriptors for tabular models; max_epochs,
+            patience, chemeleon_weights for the GNN).
 
     Returns:
         Tuple (mean_score, scores): the mean outer R2 and the list of per-fold R2s.
 
     Raises:
-        RuntimeError: If any of the CV_SEEDS x N_FOLDS score JSONs is missing.
+        RuntimeError: If any of the cv_seeds x n_folds score JSONs is missing.
     """
+    build_kwargs = build_kwargs or {}
     scores, best_params_all, missing = [], [], []
-    for seed in CV_SEEDS:
-        for fold_idx in range(N_FOLDS):
-            sp = CV_DIR / prefix / f"score_seed{seed}_fold{fold_idx}.json"
-            pp = CV_DIR / prefix / f"best_params_seed{seed}_fold{fold_idx}.json"
+    for seed in cv_seeds:
+        for fold_idx in range(n_folds):
+            sp = cv_dir / prefix / f"score_seed{seed}_fold{fold_idx}.json"
+            pp = cv_dir / prefix / f"best_params_seed{seed}_fold{fold_idx}.json"
             if sp.exists():
                 with open(sp) as f:
                     scores.append(json.load(f)["r2"])
@@ -411,14 +426,15 @@ def aggregate_results(build_fn, df_train, X_fp, X_desc, prefix):
     # overall-best params chosen by inner score (not outer -> no leak)
     best_entry = max(best_params_all, key=lambda d: d.get("best_r2_inner", -np.inf))
     best_inner = best_entry.get("best_r2_inner")
-    fp_radius  = best_entry.pop("fp_radius", FP_RADIUS)
+    best_fp_radius = best_entry.pop("fp_radius", fp_radius)
     best_entry.pop("best_r2_inner", None)                 # best_entry now = the hyperparameters
 
     final_model = build_fn(
-        FixedTrial(best_entry), fp_radius,
-        df_train["molecule"].tolist(), df_train[[TARGET]].values, X_fp, X_desc,
+        FixedTrial(best_entry), best_fp_radius,
+        df_train["molecule"].tolist(), df_train[[target]].values, X_fp, X_desc,
+        **build_kwargs,
     )
-    model_path = MODELS_DIR / prefix / f"{prefix}_final"
+    model_path = models_dir / prefix / f"{prefix}_final"
     model_path.parent.mkdir(parents=True, exist_ok=True)
     final_model.save(str(model_path))
     print(f"[{prefix}] final model saved to {model_path}")
@@ -427,7 +443,7 @@ def aggregate_results(build_fn, df_train, X_fp, X_desc, prefix):
     hparams_out = {
         "model":           prefix,
         "hyperparameters": best_entry,
-        "fp_radius":       fp_radius,
+        "fp_radius":       best_fp_radius,
         "cv_mean_r2":      round(mean_score, 4),
         "cv_std_r2":       round(std_score, 4),
         "best_inner_r2":   round(best_inner, 4) if best_inner is not None else None,
@@ -438,92 +454,3 @@ def aggregate_results(build_fn, df_train, X_fp, X_desc, prefix):
     print(f"[{prefix}] hyperparameters saved to {model_path.parent / f'{prefix}_hparams.yaml'}")
 
     return mean_score, scores
-
-
-# ── Entry point ─────────────────────────────────────────────────────────────
-def parse_args():
-    """Parse CLI args.
-
-    Selects the run mode (--split / --precompute / --aggregate / single-fold)
-    plus the model, input CSV, prefix, and tuning budget.
-
-    Returns:
-        argparse.Namespace with the parsed arguments.
-    """
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--model", choices=["xgb", "mlp", "gnn"])
-    ap.add_argument("--input", required=True, help="path to the training CSV")
-    ap.add_argument("--prefix", default="default")
-    ap.add_argument("--n_trials", type=int, default=25)
-    ap.add_argument("--seed", type=int, help="single-fold mode: outer seed")
-    ap.add_argument("--fold", type=int, help="single-fold mode: outer fold index")
-    ap.add_argument("--aggregate", action="store_true",
-                    help="aggregate the saved folds and retrain the final model")
-    ap.add_argument("--precompute", action="store_true",
-                    help="compute + cache fp/desc once, then exit (run before the folds)")
-    ap.add_argument("--split", action="store_true",
-                    help="scaffold train/test split -> write *_train.csv / *_test.csv, then exit")
-    ap.add_argument("--test-size", type=float, default=0.2)
-    return ap.parse_args()
-
-
-def main():
-    """Dispatch on the parsed args to one of the run modes.
-
-    --split and --precompute are model-agnostic one-shots that write their output
-    and exit. Otherwise --model is required and output dirs are created lazily:
-    --aggregate collects the folds and retrains the final model, while the default
-    single-fold mode (requires --seed and --fold) tunes and evaluates one fold.
-
-    Args:
-        None. Reads from the command line via parse_args().
-
-    Returns:
-        None. Side effects only (writes CSVs, caches, fold JSONs, or the final model).
-
-    Raises:
-        SystemExit: If --model is missing for training/aggregation, or --seed/--fold
-            are missing in single-fold mode.
-    """
-    args     = parse_args()
-    df_train = pd.read_csv(args.input)
-
-    # split: model-agnostic, one-time -> write CSVs and exit
-    if args.split:
-        from mol_utils import scaffold_train_test_split
-        labels = scaffold_train_test_split(df_train["molecule"].tolist(),
-                                           test_size=args.test_size, random_state=42)
-        stem = Path(args.input).with_suffix("")
-        df_train[labels == "train"].to_csv(f"{stem}_train.csv", index=False)
-        df_train[labels == "test"].to_csv(f"{stem}_test.csv",  index=False)
-        print(pd.Series(labels).value_counts())
-        return
-
-    # precompute: model-agnostic feature caching -> do it and exit
-    if args.precompute:
-        cache_features(df_train, args.input)
-        return
-
-    if args.model is None:
-        ap_error = "--model is required for training/aggregation"
-        raise SystemExit(ap_error)
-
-    # create output dirs only when actually training/aggregating (not on import)
-    CV_DIR.mkdir(parents=True, exist_ok=True)
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
-
-    build_fn     = get_build_fn(args.model)
-    X_fp, X_desc = prepare_inputs(args.model, df_train, args.input)
-
-    if args.aggregate:
-        aggregate_results(build_fn, df_train, X_fp, X_desc, args.prefix)
-    else:
-        if args.seed is None or args.fold is None:
-            raise SystemExit("single-fold mode requires --seed and --fold (or use --aggregate)")
-        df_train["scaffolds"] = df_train["molecule"].apply(get_scaffold)
-        run_single_fold(build_fn, df_train, X_fp, X_desc,
-                        args.seed, args.fold, args.prefix, args.n_trials)
-
-
-if __name__ == "__main__":
-    main()

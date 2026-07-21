@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -7,7 +8,11 @@ import skops.io as sio
 from sklearn.preprocessing import QuantileTransformer
 from sklearn.metrics import r2_score
 
-from mol_utils import compute_fingerprints, sanitize_matrix, make_preprocessor
+sys.path.append(str(Path(__file__).resolve().parents[3]))   # -> src/
+
+from protac_synth.chem_utils import (  # noqa: E402
+    standardize_all, compute_fingerprints, sanitize_matrix, make_preprocessor,
+)
 from rdkit import RDLogger
 
 RDLogger.DisableLog('rdApp.*')
