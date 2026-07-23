@@ -24,7 +24,7 @@ from rdkit import RDLogger
 
 RDLogger.DisableLog("rdApp.*")
 
-sys.path.append(str(Path(__file__).resolve().parent.parent.parent / "src"))
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
 from chem_utils import (  # noqa: E402
     canon_smiles,

@@ -23,7 +23,7 @@ import pandas as pd
 import yaml
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-sys.path.append(str(_PROJECT_ROOT / "src"))
+sys.path.append(str(_PROJECT_ROOT))
 
 from protac_synth.chem_utils import get_scaffold, scaffold_train_test_split  # noqa: E402
 from protac_synth.models.train import (  # noqa: E402
