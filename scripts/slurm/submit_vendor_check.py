@@ -21,7 +21,7 @@ from pathlib import Path
 from textwrap import dedent
 
 REPO_ROOT     = Path(__file__).resolve().parent.parent
-VENDOR_SCRIPT = REPO_ROOT / "src" / "data_preprocessing" / "comp_cid_vendor_check.py"
+VENDOR_SCRIPT = REPO_ROOT / "data_preprocessing" / "comp_cid_vendor_check.py"
 
 
 def parse_args() -> argparse.Namespace:

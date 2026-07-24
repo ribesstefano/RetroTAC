@@ -12,14 +12,25 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from rdkit import Chem, DataStructs
-from rdkit.Chem import rdFingerprintGenerator
+from rdkit import Chem, DataStructs, RDLogger
+from rdkit.Chem import Descriptors, rdFingerprintGenerator
 from rdkit.Chem.MolStandardize import rdMolStandardize
+from rdkit.Chem.Scaffolds.MurckoScaffold import GetScaffoldForMol, MakeScaffoldGeneric
+from rdkit.ML.Descriptors import MoleculeDescriptors
+from sklearn.compose import ColumnTransformer
+from sklearn.decomposition import TruncatedSVD
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline as SkPipeline
+from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
+
+RDLogger.DisableLog("rdApp.*")
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +93,22 @@ def std_smiles(smi: Any) -> Optional[str]:
         return Chem.MolToSmiles(mol, canonical=True, isomericSmiles=True)
     except Exception:
         return None
+
+
+def standardize_all(smiles_list: List[Any]) -> List[Optional[Any]]:
+    """Standardize a batch of SMILES via ``std_smiles``, returning parsed Mols.
+
+    Downstream feature computation (``compute_fingerprints``, ``compute_descriptors``)
+    consumes Mols so each molecule is only parsed/standardized once.
+
+    Args:
+        smiles_list: Raw SMILES strings.
+
+    Returns:
+        List of RDKit Mol (or None where standardization/parsing failed),
+        aligned with *smiles_list*.
+    """
+    return [smiles_to_mol(std_smiles(s)) for s in smiles_list]
 
 
 def smiles_hash(smiles: str, length: int = 8) -> str:
@@ -267,6 +294,187 @@ def make_hash_ids(series: pd.Series, prefix: str) -> pd.Series:
         Series of ID strings aligned with *series*.
     """
     return series.map(lambda s: f"{prefix}_{smiles_hash(s)}" if pd.notna(s) else None)
+
+
+# ── Surrogate-model feature computation ────────────────────────────────────────
+
+# Shared across compute_descriptors' default calculator/n_desc args below.
+DESCRIPTOR_NAMES = [name for name, _ in Descriptors._descList if name != "Ipc"]
+DESCRIPTOR_CALCULATOR = MoleculeDescriptors.MolecularDescriptorCalculator(DESCRIPTOR_NAMES)
+
+
+def compute_fingerprints(mols: List[Any], fp_size: int = 512, fp_radius: int = 3) -> np.ndarray:
+    """Compute Morgan fingerprints for pre-standardized Mols.
+
+    Args:
+        mols: RDKit Mols (e.g. from ``standardize_all``); None entries allowed.
+        fp_size: Folded bit-vector length.
+        fp_radius: Bond-hop radius from each heavy atom center.
+
+    Returns:
+        Float32 array of shape [len(mols), fp_size]; a zero row for None mols.
+    """
+    gen = rdFingerprintGenerator.GetMorganGenerator(
+        radius=fp_radius, fpSize=fp_size, includeChirality=True
+    )
+    fps = []
+    for mol in tqdm(mols, desc="Computing fingerprints", unit="mol"):
+        if mol is None:
+            fps.append(np.zeros(fp_size, dtype=np.float32))
+        else:
+            fps.append(gen.GetFingerprintAsNumPy(Chem.AddHs(mol)).astype(np.float32))
+    return np.vstack(fps)
+
+
+def compute_descriptors(
+    mols: List[Any],
+    calculator: Any = DESCRIPTOR_CALCULATOR,
+    n_desc: int = len(DESCRIPTOR_NAMES),
+) -> np.ndarray:
+    """Compute RDKit descriptors for pre-standardized Mols.
+
+    Args:
+        mols: RDKit Mols (e.g. from ``standardize_all``); None entries allowed.
+        calculator: RDKit descriptor calculator. Defaults to the full RDKit set.
+        n_desc: Number of descriptors *calculator* produces (row width for NaN rows).
+
+    Returns:
+        Float32 array of shape [len(mols), n_desc]; a NaN row for None mols.
+    """
+    rows = []
+    for mol in tqdm(mols, desc="Computing descriptors", unit="mol"):
+        if mol is None:
+            rows.append(np.full(n_desc, np.nan, dtype=np.float32))
+        else:
+            vals = np.clip(np.array(calculator.CalcDescriptors(mol), dtype=np.float64), -1e4, 1e4)
+            rows.append(vals.astype(np.float32))
+    return np.vstack(rows)
+
+
+def sanitize_matrix(X: np.ndarray) -> np.ndarray:
+    """Replace inf with NaN and clip to a float32-safe range.
+
+    Args:
+        X: Feature matrix, possibly containing inf/out-of-range values.
+
+    Returns:
+        Float32 array, same shape as *X*.
+    """
+    X = np.where(np.isinf(X), np.nan, X)
+    return np.clip(X, -1e4, 1e4).astype(np.float32)
+
+
+def make_preprocessor(
+    use_fingerprints: bool,
+    use_descriptors: bool,
+    n_fp_cols: int,
+    n_desc_cols: int,
+    svd_components: int = 64,
+    random_state: int = 42,
+) -> SkPipeline:
+    """Build an unfitted sklearn preprocessing pipeline for fp/descriptor features.
+
+    Three cases: fingerprints-only -> SVD (or passthrough); descriptors-only ->
+    impute/var-threshold/scale; both -> a ColumnTransformer splitting the two
+    column blocks.
+
+    Args:
+        use_fingerprints: Whether the input includes a fingerprint block.
+        use_descriptors: Whether the input includes a descriptor block.
+        n_fp_cols: Width of the fingerprint block (ignored if unused).
+        n_desc_cols: Width of the descriptor block (ignored if unused).
+        svd_components: TruncatedSVD output dims for the fingerprint block;
+            0 disables SVD (passthrough).
+        random_state: Seed for TruncatedSVD.
+
+    Returns:
+        Unfitted sklearn Pipeline.
+    """
+    # fingerprint block: optional dimensionality reduction
+    fp_processor = (
+        TruncatedSVD(n_components=svd_components, random_state=random_state)
+        if svd_components else 'passthrough'
+    )
+
+    # descriptor block: fill NaNs -> drop constant cols -> standardize
+    desc_pipeline = SkPipeline([
+        ('impute',     SimpleImputer(strategy='median')),
+        ('var_thresh', VarianceThreshold(threshold=0.0)),
+        ('scale',      StandardScaler()),
+    ])
+
+    # both active -> split columns and apply each processor to its block
+    if use_fingerprints and use_descriptors:
+        return SkPipeline([
+            ('ct', ColumnTransformer([
+                ('fp',   fp_processor,  slice(0, n_fp_cols)),
+                ('desc', desc_pipeline, slice(n_fp_cols, n_fp_cols + n_desc_cols)),
+            ])),
+        ])
+
+    # fingerprints only
+    if use_fingerprints:
+        return SkPipeline([('fp', fp_processor)])
+
+    # descriptors only
+    return SkPipeline([('desc', desc_pipeline)])
+
+
+def get_scaffold(smiles: str, generic: bool = False) -> str:
+    """Compute the Murcko scaffold for a SMILES string.
+
+    Args:
+        smiles: Input SMILES string.
+        generic: If True, return the generic (element-agnostic) scaffold.
+
+    Returns:
+        Scaffold SMILES, or the original SMILES if parsing fails or the
+        scaffold is empty (e.g. acyclic molecules).
+    """
+    mol = smiles_to_mol(smiles)
+    if mol is None:                      # unparseable -> fall back, don't crash
+        return smiles
+    if generic:
+        scaffold = Chem.MolToSmiles(MakeScaffoldGeneric(mol))
+    else:
+        scaffold = Chem.MolToSmiles(GetScaffoldForMol(mol))
+    return scaffold if len(scaffold) > 0 else smiles
+
+
+def scaffold_train_test_split(
+    smiles_list: List[str],
+    test_size: float = 0.2,
+    random_state: int = 42,
+    generic: bool = False,
+) -> np.ndarray:
+    """Assign each molecule to 'train' or 'test' by scaffold groups.
+
+    Molecules sharing a scaffold land in the same split (no leakage).
+
+    Args:
+        smiles_list: SMILES strings to split.
+        test_size: Target fraction of molecules assigned to 'test'.
+        random_state: Seed for the scaffold-group shuffle.
+        generic: If True, group by the generic (element-agnostic) scaffold.
+
+    Returns:
+        Array of "train"/"test" labels aligned with *smiles_list*.
+    """
+    scaffold_to_idx = defaultdict(list)
+    for i, smi in enumerate(smiles_list):
+        scaffold_to_idx[get_scaffold(smi, generic=generic)].append(i)
+
+    rng    = np.random.default_rng(random_state)
+    groups = list(scaffold_to_idx.keys())
+    rng.shuffle(groups)
+
+    n_test, test_idx = int(np.floor(test_size * len(smiles_list))), set()
+    for sc in groups:
+        if len(test_idx) >= n_test:
+            break
+        test_idx.update(scaffold_to_idx[sc])
+
+    return np.array(["test" if i in test_idx else "train" for i in range(len(smiles_list))])
 
 
 # ── pandas / tqdm utility ─────────────────────────────────────────────────────

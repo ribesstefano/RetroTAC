@@ -2,6 +2,7 @@
 __pycache__/
 *.py[codz]
 *$py.class
+*.pyc
 
 # C extensions
 *.so
@@ -156,6 +157,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+conda/
 
 # Spyder project settings
 .spyderproject
@@ -255,12 +257,17 @@ logs_test/
 .ipynb_checkpoints/
 # Processed data (regeneratable from pipeline)
 data/processed/
-external
+external/
 
 # Large files
-*.csv
-*.cxsmiles
-*.jsonl
+**/*.csv
+**/*.cxsmiles
+**/*.jsonl
+**/*.ckpt
+**/*.npy
+**/*.npz
+**/*.pt
 
 # Data folder
+chemeleon/
 data/
