@@ -24,6 +24,33 @@ All scoring behaviour comes from a YAML config passed at call time (see
 ``config/route_scoring.yaml``); no configuration lives in the source, and no
 global config object is used -- a :class:`ScoringConfig` is passed explicitly
 to every function that needs it.
+
+Usage
+-----
+Run inside the environment that has RDKit (``mamba activate env-protac-synth``)
+for exact heavy-atom counts; the scorer falls back to a SMILES approximation if
+RDKit is unavailable.
+
+    uv run python retro_scores/route_scores/route_tree_score.py \\
+      --input data/llm_scoring/routes.csv \\
+      --config config/route_scoring.yaml \\
+      --output data/llm_scoring/routes_scored.csv \\
+      --sep '\\t'
+
+The input CSV must contain a route column (a route dict such as
+``{1: [['P => R1.R2', label]], ...}``) and a boolean ``resolved`` column. Column
+names default to ``route``, ``resolved``, and ``SMILES``; set them in the
+``columns:`` block of the config, or override with ``--route-col``,
+``--resolved-col``, ``--smiles-col``. The delimiter is auto-detected; pass
+``--sep '\\t'`` for tab-separated files. To change the metric weights or the
+empty-route anchors, edit the config file -- do not modify the source.
+
+Output: the input CSV plus ``synthesizability``, a ``score_note``, and the
+``struct_*`` diagnostic columns. If ``--output`` is omitted, results are written
+to ``<input>_scored.csv``.
+
+The module can also be imported: :func:`score_route` scores one route,
+:func:`score_dataframe` scores a whole DataFrame.
 """
 from __future__ import annotations
 
