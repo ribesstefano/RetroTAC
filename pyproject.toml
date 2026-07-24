@@ -57,6 +57,12 @@ retrosynth = [
     "aizynthfinder==4.4.1",
 ]
 
+# LLM-as-judge scoring of retrosynthesis routes
+llm_scoring = [
+    "dspy>=2.6",
+    "pydantic>=2.0",
+]
+
 notebooks = [
     "jupyter>=1.1",
     "jupyterlab>=4.5",
