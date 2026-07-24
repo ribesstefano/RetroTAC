@@ -2,6 +2,7 @@
 __pycache__/
 *.py[codz]
 *$py.class
+*.pyc
 
 # C extensions
 *.so
@@ -259,12 +260,13 @@ data/processed/
 external/
 
 # Large files
-*.csv
-*.cxsmiles
-*.jsonl
-*.ckpt
-src/protac_synth/models/*.pt
-*.npy
+**/*.csv
+**/*.cxsmiles
+**/*.jsonl
+**/*.ckpt
+**/*.npy
+**/*.npz
+**/*.pt
 
 # Data folder
 data/
