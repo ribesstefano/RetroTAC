@@ -269,4 +269,5 @@ external/
 **/*.pt
 
 # Data folder
+chemeleon/
 data/

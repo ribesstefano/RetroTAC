@@ -50,7 +50,7 @@ def build_gnn(
         Fitted CheMeleonRegressor.
     """
     gnn_params = {
-        "ffn_hidden_dim": trial.suggest_categorical("ffn_hidden_dim", [128, 300, 512]),
+        "ffn_hidden_dim": trial.suggest_categorical("ffn_hidden_dim", [128, 256, 512]),
         "ffn_n_layers": trial.suggest_int("ffn_n_layers", 1, 3),
         "dropout": trial.suggest_float("dropout", 0.0, 0.4),
         "max_lr": trial.suggest_float("max_lr", 1e-4, 5e-3, log=True),

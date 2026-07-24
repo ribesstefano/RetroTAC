@@ -27,14 +27,29 @@
 
 ## Development
 
-Export the `uv` to a proper location, then run:
+## Environment Setup
+
+On Berzelius, to create the environment:
+
+``bash
+module load Mambaforge/23.3.1-1-hpc1-bdist
+mamba create -n env-protac-synth python=3.12 -y
+mamba activate env-protac-synth
+pip install uv
+```
+
+Export the `uv` to a proper location and activate the environment:
 
 ```bash
-uv sync --extra dev --extra retrosynth
-uv sync --all-extras
+export UV_CACHE_DIR="/proj/berzelius-2026-62/users/x_steri/.cache"
+mamba activate env-protac-synth
+uv sync --extra dev --extra retrosynth # For Stefano and Andrea, training and retrosynthesis stuff
+uv sync --all-extras # For Lukas, training only
 ```
 
 ### Training
+
+Example:
 
 ```bash
 uv run python scripts/models/train.py \
@@ -48,13 +63,30 @@ uv run python scripts/models/train.py \
   --fold 1
 ```
 
-To test on Berzelius:
+To specify the SMILES and label columns, update the config file. GNN pretrained files can be obtained via:
 
 ```bash
-srun --account=Berzelius-2026-62 --partition=berzelius --gpus=1 --cpus-per-task=4  python scripts/models/train.py   --model xgb   --input data/llm_scoring/routes_llm_scores.csv   --config config/models_config.yaml   --output-root outputs/   --prefix PREFIX   --n_trials 2   --seed 42   --fold 1 --device cpu
-
-srun --account=Berzelius-2026-62 --partition=berzelius --gpus=1 --cpus-per-task=4  python scripts/models/train.py   --model mlp   --input data/llm_scoring/routes_llm_scores.csv   --config config/models_config.yaml   --output-root outputs/   --prefix PREFIX   --n_trials 2   --seed 42   --fold 1 --device cpu
-
-srun --account=Berzelius-2026-62 --par
-tition=berzelius --gpus=1 --cpus-per-task=4  python scripts/models/train.py   --model gnn   --input data/llm_scoring/routes_llm_scores.csv   --config config/models_config.yaml   --output-root outputs/   --prefix PREFIX   --n_trials 2   --seed 42   --fold 2 --device gpu
+wget https://zenodo.org/records/15460715/files/chemeleon_mp.pt
 ```
+
+To test SLURM jobs on Berzelius:
+
+```bash
+srun --account=Berzelius-2026-62 --partition=berzelius --gpus=1 --cpus-per-task=16  python scripts/models/train.py   --model xgb   --input data/llm_scoring/routes_llm_scores.csv   --config config/models_config.yaml   --output-root outputs/   --prefix PREFIX   --n_trials 2   --seed 42   --fold 1 --device gpu
+
+srun --account=Berzelius-2026-62 --partition=berzelius --gpus=1 --cpus-per-task=16  python scripts/models/train.py   --model mlp   --input data/llm_scoring/routes_llm_scores.csv   --config config/models_config.yaml   --output-root outputs/   --prefix PREFIX   --n_trials 2   --seed 42   --fold 1 --device gpu
+
+srun --account=Berzelius-2026-62 --partition=berzelius --gpus=1 --cpus-per-task=16  python scripts/models/train.py   --model gnn   --input data/llm_scoring/routes_llm_scores.csv   --config config/models_config.yaml   --output-root outputs/   --prefix PREFIX   --n_trials 2   --seed 42   --fold 2 --device gpu
+```
+
+Change the PREFIX to anything useful to keep track of the runs.
+
+To run a job array on SLURM, run:
+
+```bash
+sbatch slurm/train_cv_array_xgb.sh
+sbatch slurm/train_cv_array_mlp.sh
+sbatch slurm/train_cv_array_gnn.sh
+```
+
+Logs will saved under: `logs/models/<xgb|gnn|mlp>/`
