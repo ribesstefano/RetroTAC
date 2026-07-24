@@ -1,21 +1,23 @@
 """
-train.py
-========
+training.py
+===========
 5x5 nested scaffold cross-validation for the PROTAC synthesizability
 surrogate models (xgb / mlp / gnn), model-agnostic.
 
 Library only — no argparse/main and no module-level paths. The CLI entry
 point is scripts/models/train.py, which supplies every path and config
-value as an explicit argument.
+value as an explicit argument (SMILES column, target, cache location, ...).
 """
 import json
 import os
 import shutil
 from collections import defaultdict
 from pathlib import Path
+from typing import Callable, Dict, List, Optional, Tuple
 
 import yaml
 import numpy as np
+import pandas as pd
 import optuna
 from optuna.trial import FixedTrial
 
@@ -23,7 +25,7 @@ from protac_synth.chem_utils import standardize_all, compute_fingerprints, compu
 
 
 # ── Model dispatch (lazy import so a run pulls in only its backend) ──────────
-def get_build_fn(model: str):
+def get_build_fn(model: str) -> Callable:
     """Return the model's `build_*` factory, importing only that backend.
 
     The import is deferred so a run never pulls in the other models' heavy deps
@@ -51,27 +53,8 @@ def get_build_fn(model: str):
 
 
 # ── Feature caching ─────────────────────────────────────────────────────────
-def feature_paths(input_path, fp_radius, fp_size):
-    """Build the cache file paths for fingerprints/descriptors, next to the input CSV.
-
-    FP params are baked into the name so a config change can't reuse a stale cache.
-
-    Args:
-        input_path: Path to the input CSV; its stem is reused for the cache names.
-        fp_radius: Morgan fingerprint radius, baked into the fp cache filename.
-        fp_size: Morgan fingerprint bit size, baked into the fp cache filename.
-
-    Returns:
-        Tuple (fp_path, desc_path) of Path objects for the .npy caches.
-    """
-    stem = str(Path(input_path).with_suffix(""))
-    fp_path   = Path(f"{stem}_fp_r{fp_radius}_{fp_size}.npy")
-    desc_path = Path(f"{stem}_desc.npy")
-    return fp_path, desc_path
-
-
-def _load_or_compute(path, compute_fn, n_expected):
-    """Load a cached .npy if present (and row-count matches), else compute + save.
+def _load_or_compute(path: Path, compute_fn: Callable[[], np.ndarray], n_expected: int) -> np.ndarray:
+    """Load a cached .npz if present (and row-count matches), else compute + save.
 
     Args:
         path: Destination/source .npy cache path.
@@ -85,7 +68,8 @@ def _load_or_compute(path, compute_fn, n_expected):
         ValueError: If a cached array's row count differs from `n_expected`.
     """
     if path.exists():
-        arr = np.load(path)
+        with np.load(path) as data:
+            arr = data["arr_0"]               # savez_compressed stores the array under the auto key arr_0
         if arr.shape[0] != n_expected:
             raise ValueError(
                 f"Cached {path.name} has {arr.shape[0]} rows but the dataset has "
@@ -93,30 +77,45 @@ def _load_or_compute(path, compute_fn, n_expected):
             )
         return arr
     arr = compute_fn()
-    np.save(path, arr)
+    np.savez_compressed(path, arr)
     return arr
 
 
-def cache_features(df_train, input_path, fp_radius, fp_size, use_fingerprints, use_descriptors):
+def cache_features(
+    df_train: pd.DataFrame,
+    cache_dir: Path,
+    fp_radius: int = 3,
+    fp_size: int = 512,
+    use_fingerprints: bool = True,
+    use_descriptors: bool = True,
+    molecule_col: str = "molecule",
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     """Model-agnostic: load (or compute+cache) fp/desc per the given feature flags.
 
-    SMILES are standardized ONCE and the mols reused for both feature types.
+    SMILES are standardized ONCE and the mols reused for both feature types. Caches
+    live in the dedicated `cache_dir` and are named only by the feature params (not
+    the input file), so the cache is never written next to the input data.
 
     Args:
-        df_train: DataFrame with a "molecule" column of SMILES.
-        input_path: Path to the input CSV, used to locate the feature caches.
+        df_train: DataFrame holding the SMILES in `molecule_col`.
+        cache_dir: Dedicated directory to hold the .npz caches.
         fp_radius: Morgan fingerprint radius.
         fp_size: Morgan fingerprint bit size.
         use_fingerprints: Whether to compute/cache fingerprints.
         use_descriptors: Whether to compute/cache RDKit descriptors.
+        molecule_col: Name of the SMILES column in df_train.
 
     Returns:
         Tuple (X_fp, X_desc); each is a numpy array, or None when disabled by
         use_fingerprints / use_descriptors.
     """
-    smiles = df_train["molecule"].tolist()
-    mols   = standardize_all(smiles)                    # standardize once, reuse for both
-    fp_path, desc_path = feature_paths(input_path, fp_radius, fp_size)
+    smiles = df_train[molecule_col].tolist()
+    mols = standardize_all(smiles)                    # standardize once, reuse for both
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)      # ensure the dedicated cache dir exists before writing
+    # FP params are baked into the name so a config change can't reuse a stale cache.
+    fp_path = cache_dir / f"fp_r{fp_radius}_{fp_size}.npz"
+    desc_path = cache_dir / "desc.npz"
 
     X_fp = _load_or_compute(
         fp_path, lambda: compute_fingerprints(mols, fp_size, fp_radius), len(df_train)
@@ -127,7 +126,16 @@ def cache_features(df_train, input_path, fp_radius, fp_size, use_fingerprints, u
     return X_fp, X_desc
 
 
-def prepare_inputs(model, df_train, input_path, fp_radius, fp_size, use_fingerprints, use_descriptors):
+def prepare_inputs(
+    model: str,
+    df_train: pd.DataFrame,
+    cache_dir: Path,
+    fp_radius: int = 3,
+    fp_size: int = 512,
+    use_fingerprints: bool = True,
+    use_descriptors: bool = True,
+    molecule_col: str = "molecule",
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     """Assemble training-time inputs for the chosen model.
 
     Tabular models load the shared feature cache; the GNN builds graphs inside
@@ -135,12 +143,13 @@ def prepare_inputs(model, df_train, input_path, fp_radius, fp_size, use_fingerpr
 
     Args:
         model: Model key ("xgb", "mlp", or "gnn").
-        df_train: DataFrame with a "molecule" column of SMILES.
-        input_path: Path to the input CSV, used to locate the feature caches.
+        df_train: DataFrame holding the SMILES in `molecule_col`.
+        cache_dir: Dedicated directory to hold the .npy caches.
         fp_radius: Morgan fingerprint radius.
         fp_size: Morgan fingerprint bit size.
         use_fingerprints: Whether to compute/cache fingerprints.
         use_descriptors: Whether to compute/cache RDKit descriptors.
+        molecule_col: Name of the SMILES column in df_train.
 
     Returns:
         Tuple (X_fp, X_desc); (None, None) for the GNN, otherwise the cached
@@ -148,11 +157,18 @@ def prepare_inputs(model, df_train, input_path, fp_radius, fp_size, use_fingerpr
     """
     if model == "gnn":
         return None, None
-    return cache_features(df_train, input_path, fp_radius, fp_size, use_fingerprints, use_descriptors)
+    return cache_features(df_train, cache_dir, fp_radius, fp_size,
+                          use_fingerprints, use_descriptors, molecule_col)
 
 
 # ── Scaffold-grouped fold indices ───────────────────────────────────────────
-def get_fold_indices(df_train, seed, fold_idx, n_folds, inner_val_frac=0.2):
+def get_fold_indices(
+    df_train: pd.DataFrame,
+    seed: int,
+    fold_idx: int,
+    n_folds: int = 5,
+    inner_val_frac: float = 0.2,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Build scaffold-grouped index arrays for one outer fold of nested CV.
 
     Scaffolds are shuffled (seeded) and greedily balanced across `n_folds`; the
@@ -184,7 +200,7 @@ def get_fold_indices(df_train, seed, fold_idx, n_folds, inner_val_frac=0.2):
         target = min(range(n_folds), key=lambda f: len(folds[f]))
         folds[target].extend(scaffold_to_indices[scaffold])
 
-    fold_val_idx   = np.array(folds[fold_idx], dtype=int)
+    fold_val_idx = np.array(folds[fold_idx], dtype=int)
     fold_train_idx = np.array([i for f in range(n_folds) if f != fold_idx
                                  for i in folds[f]], dtype=int)
 
@@ -203,16 +219,29 @@ def get_fold_indices(df_train, seed, fold_idx, n_folds, inner_val_frac=0.2):
             break
         inner_val_set.update(inner_scaffold_to_indices[scaffold])
 
-    inner_val_idx   = np.array([p for p in fold_train_idx if p in inner_val_set], dtype=int)
+    inner_val_idx = np.array([p for p in fold_train_idx if p in inner_val_set], dtype=int)
     inner_train_idx = np.array([p for p in fold_train_idx if p not in inner_val_set], dtype=int)
     return fold_train_idx, fold_val_idx, inner_train_idx, inner_val_idx
 
 
 # ── Inner Optuna tuning ─────────────────────────────────────────────────────
-def tune_inner_fold(build_fn, df_train, X_fp, X_desc,
-                    inner_train_idx, inner_val_idx,
-                    seed, fold_idx, prefix, cv_dir, target, fp_radius,
-                    n_trials=25, build_kwargs=None) -> dict:
+def tune_inner_fold(
+    build_fn: Callable,
+    df_train: pd.DataFrame,
+    X_fp: Optional[np.ndarray],
+    X_desc: Optional[np.ndarray],
+    inner_train_idx: np.ndarray,
+    inner_val_idx: np.ndarray,
+    seed: int,
+    fold_idx: int,
+    prefix: str,
+    cv_dir: Path,
+    target: str,
+    fp_radius: int = 3,
+    n_trials: int = 25,
+    molecule_col: str = "molecule",
+    build_kwargs: Optional[Dict] = None,
+) -> Dict:
     """Run the inner Optuna loop for one outer fold and return the best params.
 
     Each trial builds a model on the inner-train split and is scored (R2) on the
@@ -223,7 +252,7 @@ def tune_inner_fold(build_fn, df_train, X_fp, X_desc,
 
     Args:
         build_fn: Model factory from get_build_fn; called once per trial.
-        df_train: Full training DataFrame ("molecule" + target columns).
+        df_train: Full training DataFrame (SMILES in molecule_col + target columns).
         X_fp: Fingerprint feature matrix, or None.
         X_desc: Descriptor feature matrix, or None.
         inner_train_idx: Position array for the inner-train rows.
@@ -235,6 +264,7 @@ def tune_inner_fold(build_fn, df_train, X_fp, X_desc,
         target: Name of the target column in df_train.
         fp_radius: Morgan fingerprint radius, forwarded to build_fn.
         n_trials: Number of Optuna trials. Defaults to 25.
+        molecule_col: Name of the SMILES column in df_train.
         build_kwargs: Model-specific config forwarded to build_fn (e.g. fp_size,
             use_fingerprints, use_descriptors for tabular models; max_epochs,
             patience, chemeleon_weights for the GNN).
@@ -243,14 +273,14 @@ def tune_inner_fold(build_fn, df_train, X_fp, X_desc,
         The best hyperparameters (Optuna study.best_params dict).
     """
     build_kwargs = build_kwargs or {}
-    smiles_itr  = df_train.iloc[inner_train_idx]["molecule"].tolist()
-    smiles_ival = df_train.iloc[inner_val_idx]["molecule"].tolist()
-    y_itr  = df_train.iloc[inner_train_idx][[target]].values
+    smiles_itr = df_train.iloc[inner_train_idx][molecule_col].tolist()
+    smiles_ival = df_train.iloc[inner_val_idx][molecule_col].tolist()
+    y_itr = df_train.iloc[inner_train_idx][[target]].values
     y_ival = df_train.iloc[inner_val_idx][[target]].values
-    X_fp_itr    = X_fp[inner_train_idx]  if X_fp  is not None else None
-    X_fp_ival   = X_fp[inner_val_idx]    if X_fp  is not None else None
-    X_desc_itr  = X_desc[inner_train_idx] if X_desc is not None else None
-    X_desc_ival = X_desc[inner_val_idx]   if X_desc is not None else None
+    X_fp_itr = X_fp[inner_train_idx] if X_fp  is not None else None
+    X_fp_ival = X_fp[inner_val_idx] if X_fp  is not None else None
+    X_desc_itr = X_desc[inner_train_idx] if X_desc is not None else None
+    X_desc_ival = X_desc[inner_val_idx] if X_desc is not None else None
 
     def objective(trial):
         m = build_fn(
@@ -263,9 +293,9 @@ def tune_inner_fold(build_fn, df_train, X_fp, X_desc,
         return float(m.score(smiles_ival, y_ival, X_fp=X_fp_ival, X_desc=X_desc_ival))
 
     # ── node-local DB (reliable SQLite) + durable /proj snapshot (resume) ───
-    tmp_dir    = os.environ.get("TMPDIR", "/tmp")
-    local_db   = f"{tmp_dir}/{prefix}_seed{seed}_fold{fold_idx}.db"
-    out_dir    = cv_dir / prefix
+    tmp_dir = os.environ.get("TMPDIR", "/tmp")
+    local_db = f"{tmp_dir}/{prefix}_seed{seed}_fold{fold_idx}.db"
+    out_dir = cv_dir / prefix
     out_dir.mkdir(parents=True, exist_ok=True)
     persist_db = out_dir / f"{prefix}_seed{seed}_fold{fold_idx}.db"
 
@@ -273,12 +303,12 @@ def tune_inner_fold(build_fn, df_train, X_fp, X_desc,
         shutil.copy(persist_db, local_db)
 
     study = optuna.create_study(
-        study_name     = f"{prefix}_{seed}_fold{fold_idx}",
-        direction      = "maximize",
-        storage        = f"sqlite:///{local_db}",
+        study_name = f"{prefix}_{seed}_fold{fold_idx}",
+        direction = "maximize",
+        storage = f"sqlite:///{local_db}",
         load_if_exists = True,
-        sampler        = optuna.samplers.TPESampler(seed=seed + fold_idx),
-        pruner         = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=3),
+        sampler = optuna.samplers.TPESampler(seed=seed + fold_idx),
+        pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=3),
     )
 
     def _snapshot(study, trial):
@@ -295,8 +325,23 @@ def tune_inner_fold(build_fn, df_train, X_fp, X_desc,
 
 
 # ── One outer fold: tune -> refit -> score -> save ──────────────────────────
-def run_single_fold(build_fn, df_train, X_fp, X_desc, seed, fold_idx, prefix,
-                    cv_dir, target, fp_radius, n_folds, n_trials=25, build_kwargs=None):
+def run_single_fold(
+    build_fn: Callable,
+    df_train: pd.DataFrame,
+    X_fp: Optional[np.ndarray],
+    X_desc: Optional[np.ndarray],
+    seed: int,
+    fold_idx: int,
+    prefix: str,
+    cv_dir: Path,
+    target: str,
+    fp_radius: int = 3,
+    n_folds: int = 5,
+    n_trials: int = 25,
+    save_fold_model: bool = True,
+    molecule_col: str = "molecule",
+    build_kwargs: Optional[Dict] = None,
+) -> float:
     """Evaluate one outer fold end-to-end: tune on the inner split, refit on the
     full fold-train with the best params, score (R2) on the held-out fold-val,
     and persist the result to score_seed{seed}_fold{fold_idx}.json.
@@ -306,7 +351,7 @@ def run_single_fold(build_fn, df_train, X_fp, X_desc, seed, fold_idx, prefix,
 
     Args:
         build_fn: Model factory from get_build_fn.
-        df_train: Full training DataFrame ("molecule", "scaffolds", target).
+        df_train: Full training DataFrame (SMILES in molecule_col, "scaffolds", target).
         X_fp: Fingerprint feature matrix, or None.
         X_desc: Descriptor feature matrix, or None.
         seed: Outer seed for this fold.
@@ -317,6 +362,10 @@ def run_single_fold(build_fn, df_train, X_fp, X_desc, seed, fold_idx, prefix,
         fp_radius: Morgan fingerprint radius, forwarded to build_fn.
         n_folds: Total number of outer folds.
         n_trials: Inner-tuning trial budget. Defaults to 25.
+        save_fold_model: If True (default), persist the refit fold model next to
+            its score JSON as model_seed{seed}_fold{fold_idx} (extension set by the
+            model's own save()). Disable to keep only scores/params for large sweeps.
+        molecule_col: Name of the SMILES column in df_train.
         build_kwargs: Model-specific config forwarded to build_fn (e.g. fp_size,
             use_fingerprints, use_descriptors for tabular models; max_epochs,
             patience, chemeleon_weights for the GNN).
@@ -338,20 +387,20 @@ def run_single_fold(build_fn, df_train, X_fp, X_desc, seed, fold_idx, prefix,
         build_fn, df_train, X_fp, X_desc,
         inner_train_idx, inner_val_idx,
         seed, fold_idx, prefix, cv_dir, target, fp_radius, n_trials,
-        build_kwargs=build_kwargs,
+        molecule_col=molecule_col, build_kwargs=build_kwargs,
     )
 
-    smiles_tr  = df_train.iloc[fold_train_idx]["molecule"].tolist()
-    smiles_val = df_train.iloc[fold_val_idx]["molecule"].tolist()
-    y_tr       = df_train.iloc[fold_train_idx][[target]].values
-    y_val      = df_train.iloc[fold_val_idx][[target]].values
-    X_fp_tr    = X_fp[fold_train_idx]  if X_fp  is not None else None
-    X_fp_val   = X_fp[fold_val_idx]    if X_fp  is not None else None
-    X_desc_tr  = X_desc[fold_train_idx] if X_desc is not None else None
-    X_desc_val = X_desc[fold_val_idx]   if X_desc is not None else None
+    smiles_tr = df_train.iloc[fold_train_idx][molecule_col].tolist()
+    smiles_val = df_train.iloc[fold_val_idx][molecule_col].tolist()
+    y_tr = df_train.iloc[fold_train_idx][[target]].values
+    y_val = df_train.iloc[fold_val_idx][[target]].values
+    X_fp_tr = X_fp[fold_train_idx] if X_fp  is not None else None
+    X_fp_val = X_fp[fold_val_idx] if X_fp  is not None else None
+    X_desc_tr = X_desc[fold_train_idx] if X_desc is not None else None
+    X_desc_val = X_desc[fold_val_idx] if X_desc is not None else None
 
     fold_fp_radius = best_params.pop("fp_radius", fp_radius)
-    fixed_trial    = FixedTrial(best_params)
+    fixed_trial = FixedTrial(best_params)
     m = build_fn(
         fixed_trial, fold_fp_radius,
         smiles_tr, y_tr, X_fp_tr, X_desc_tr,
@@ -360,6 +409,11 @@ def run_single_fold(build_fn, df_train, X_fp, X_desc, seed, fold_idx, prefix,
         **build_kwargs,
     )
     score = float(m.score(smiles_val, y_val, X_fp=X_fp_val, X_desc=X_desc_val))
+
+    # persist the refit fold model unless disabled (on by default)
+    if save_fold_model:
+        fold_model_path = cv_dir / prefix / f"model_seed{seed}_fold{fold_idx}"
+        m.save(str(fold_model_path))
 
     score_path.parent.mkdir(parents=True, exist_ok=True)
     with open(score_path, "w") as f:
@@ -370,9 +424,21 @@ def run_single_fold(build_fn, df_train, X_fp, X_desc, seed, fold_idx, prefix,
 
 
 # ── Aggregate the folds -> mean/std + final model ───────────────────────────
-def aggregate_results(build_fn, df_train, X_fp, X_desc, prefix,
-                      cv_dir, models_dir, cv_seeds, n_folds, target, fp_radius,
-                      build_kwargs=None):
+def aggregate_results(
+    build_fn: Callable,
+    df_train: pd.DataFrame,
+    X_fp: Optional[np.ndarray],
+    X_desc: Optional[np.ndarray],
+    prefix: str,
+    cv_dir: Path,
+    models_dir: Path,
+    cv_seeds: List[int],
+    n_folds: int,
+    target: str,
+    fp_radius: int = 3,
+    molecule_col: str = "molecule",
+    build_kwargs: Optional[Dict] = None,
+) -> Tuple[float, List[float]]:
     """Collect all cv_seeds x n_folds outer-fold JSONs, report mean +/- std R2,
     and retrain the final model on the full dataset.
 
@@ -382,7 +448,7 @@ def aggregate_results(build_fn, df_train, X_fp, X_desc, prefix,
 
     Args:
         build_fn: Model factory from get_build_fn.
-        df_train: Full training DataFrame ("molecule" + target columns).
+        df_train: Full training DataFrame (SMILES in molecule_col + target columns).
         X_fp: Fingerprint feature matrix, or None.
         X_desc: Descriptor feature matrix, or None.
         prefix: Run/model prefix identifying the fold JSONs and output dir.
@@ -392,6 +458,7 @@ def aggregate_results(build_fn, df_train, X_fp, X_desc, prefix,
         n_folds: Total number of outer folds per seed.
         target: Name of the target column in df_train.
         fp_radius: Fallback Morgan fingerprint radius if a fold's best params omit it.
+        molecule_col: Name of the SMILES column in df_train.
         build_kwargs: Model-specific config forwarded to build_fn (e.g. fp_size,
             use_fingerprints, use_descriptors for tabular models; max_epochs,
             patience, chemeleon_weights for the GNN).
@@ -431,7 +498,7 @@ def aggregate_results(build_fn, df_train, X_fp, X_desc, prefix,
 
     final_model = build_fn(
         FixedTrial(best_entry), best_fp_radius,
-        df_train["molecule"].tolist(), df_train[[target]].values, X_fp, X_desc,
+        df_train[molecule_col].tolist(), df_train[[target]].values, X_fp, X_desc,
         **build_kwargs,
     )
     model_path = models_dir / prefix / f"{prefix}_final"

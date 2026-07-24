@@ -25,12 +25,13 @@ from chemprop import models as cpmodels
  
 class CheMeleonRegressor:
     def __init__(self, gnn_params=None, chemeleon_weights="chemeleon_mp.pt",
-                 max_epochs=100, patience=15, random_state=42):
+                 max_epochs=100, patience=15, random_state=42, device="cpu"):
         self.gnn_params        = gnn_params or {}
         self.chemeleon_weights = chemeleon_weights
         self.max_epochs        = max_epochs
         self.patience          = patience
         self.random_state      = random_state
+        self.device            = device
  
     def _datapoints(self, smiles_list, y=None):
         if y is None:
@@ -100,7 +101,8 @@ class CheMeleonRegressor:
         ckpt_cb    = ModelCheckpoint(dirpath=tmpdir, monitor="val_loss", mode="min",
                          save_top_k=1, filename="best")
         trainer = pl.Trainer(
-            accelerator="gpu", devices=1, max_epochs=self.max_epochs,
+            accelerator=("cpu" if self.device == "cpu" else "auto"), devices=1,
+            max_epochs=self.max_epochs,
             logger=False, enable_checkpointing=True, enable_progress_bar=False,
             callbacks=[early, ckpt_cb],
         )

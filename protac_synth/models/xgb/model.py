@@ -1,4 +1,3 @@
-import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -7,8 +6,6 @@ import xgboost as xgb
 import skops.io as sio
 from sklearn.preprocessing import QuantileTransformer
 from sklearn.metrics import r2_score
-
-sys.path.append(str(Path(__file__).resolve().parents[3]))   # -> src/
 
 from protac_synth.chem_utils import (  # noqa: E402
     standardize_all, compute_fingerprints, sanitize_matrix, make_preprocessor,
@@ -28,6 +25,7 @@ class XGBoostRegressor():
         xgb_params: dict = None,
         uncharge: bool = False,
         random_state: int = 42,
+        device: str = "cpu",
     ):
         if not use_fingerprints and not use_descriptors:
             raise ValueError(
@@ -41,6 +39,7 @@ class XGBoostRegressor():
         self.xgb_params = xgb_params or {}
         self.uncharge = uncharge
         self.random_state = random_state
+        self.device = device
 
     def _featurize(
         self,
@@ -111,13 +110,17 @@ class XGBoostRegressor():
 
         default_xgb = dict(
             tree_method='hist',
-            device='cuda',
+            device=self.device,
             objective='reg:pseudohubererror',
             multi_strategy='one_output_per_tree',
             n_estimators=2000,
             early_stopping_rounds=50 if smiles_val is not None else None,
             random_state=self.random_state,
         )
+        print('-' * 80)
+        print(default_xgb)
+        print(self.xgb_params)
+        print('-' * 80)
         self.model_ = xgb.XGBRegressor(**{**default_xgb, **self.xgb_params})
 
         if smiles_val is not None:
