@@ -101,4 +101,4 @@ python retro_scores/route_scores/route_tree_score.py \\
       --sep '\\t'
 ```
 It takes SMILES, resolved and route as input columns. The output file contains the original columns with the scoring metrics, weighted synthesizability score and scoring notes. 
-The input columns and scoring weights can be modified in config/route_scoring.yaml.
+The input columns and scoring weights can be modified in `config/route_scoring.yaml`.
