@@ -90,3 +90,14 @@ sbatch slurm/train_cv_array_gnn.sh
 ```
 
 Logs will saved under: `logs/models/<xgb|gnn|mlp>/`
+
+## Tree route scoring 
+Tree routes' scores can be computed as follows:
+```bash
+python retro_scores/route_scores/route_tree_score.py \\
+      --input data/raw/routes.csv \\
+      --config config/route_scoring.yaml \\
+      --output data/outputs/routes_scored.csv \\
+      --sep '\\t'
+```
+It takes SMILES, resolved and route as input columns. The output file contains the original columns with the scoring metrics, weighted synthesizability score and scoring notes. 
