@@ -32,9 +32,9 @@ for exact heavy-atom counts; the scorer falls back to a SMILES approximation if
 RDKit is unavailable.
 
     uv run python retro_scores/route_scores/route_tree_score.py \\
-      --input data/llm_scoring/routes.csv \\
+      --input data/raw/routes.csv \\
       --config config/route_scoring.yaml \\
-      --output data/llm_scoring/routes_scored.csv \\
+      --output data/outputs/routes_scored.csv \\
       --sep '\\t'
 
 The input CSV must contain a route column (a route dict such as
