@@ -4,8 +4,9 @@ aizynthfinder_utils.py
 Shared AiZynthFinder helpers used by both the component-scoring and
 PROTAC-scoring retrosynthesis scripts.
 
-Callers must add ``src/`` to ``sys.path`` before importing so that
-``scoring_utils`` and ``stock_utils`` are resolvable.
+Callers must have the repo root on ``sys.path`` before importing (not just
+``src/``) — ``init_finder`` reaches across to ``src.protac_synth.stock_utils``,
+which is an implicit namespace package rooted one level above ``src/``.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import pandas as pd
 if TYPE_CHECKING:
     from aizynthfinder.aizynthfinder import AiZynthFinder
 
-from src.protac_synth.retro_scores.hac_score import compute_hac_weighted_score  # src/ must be on sys.path
+from .hac_score import compute_hac_weighted_score
 
 logger = logging.getLogger(__name__)
 
