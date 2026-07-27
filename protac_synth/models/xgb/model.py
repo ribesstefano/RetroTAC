@@ -1,20 +1,26 @@
+import tempfile
 from pathlib import Path
 from typing import List, Optional
 
+import huggingface_hub as hf
 import numpy as np
-import xgboost as xgb
 import skops.io as sio
-from sklearn.preprocessing import QuantileTransformer
+import xgboost as xgb
+from rdkit import RDLogger
 from sklearn.metrics import r2_score
+from sklearn.preprocessing import QuantileTransformer
 
 from protac_synth.chem_utils import (  # noqa: E402
-    standardize_all, compute_fingerprints, sanitize_matrix, make_preprocessor,
+    compute_fingerprints,
+    make_preprocessor,
+    sanitize_matrix,
+    standardize_all,
 )
-from rdkit import RDLogger
 
-RDLogger.DisableLog('rdApp.*')
+RDLogger.DisableLog("rdApp.*")
 
-class XGBoostRegressor():
+
+class XGBoostRegressor:
     def __init__(
         self,
         fp_size: int = 512,
@@ -49,7 +55,9 @@ class XGBoostRegressor():
     ) -> np.ndarray:
         if self.use_fingerprints:
             if X_fp is None:
-                X_fp = compute_fingerprints(standardize_all(smiles_list), self.fp_size, self.fp_radius)
+                X_fp = compute_fingerprints(
+                    standardize_all(smiles_list), self.fp_size, self.fp_radius
+                )
             X_fp = sanitize_matrix(X_fp)
         if self.use_descriptors and X_desc is None:
             raise ValueError(
@@ -74,7 +82,7 @@ class XGBoostRegressor():
         y_val: Optional[np.ndarray] = None,
         X_fp_val: Optional[np.ndarray] = None,
         X_desc_val: Optional[np.ndarray] = None,
-    ) -> 'XGBoostRegressor':
+    ) -> "XGBoostRegressor":
         """Fit XGBoost to featurized SMILES.
 
         Args:
@@ -96,31 +104,38 @@ class XGBoostRegressor():
         # fused into one Pipeline) so that validation data can be transformed
         # independently for XGBoost's eval_set. A fused pipeline would only
         # transform training data, breaking early stopping.
-        n_fp_cols   = self.fp_size if self.use_fingerprints else 0
-        n_desc_cols = X_desc.shape[1] if (self.use_descriptors and X_desc is not None) else 0
+        n_fp_cols = self.fp_size if self.use_fingerprints else 0
+        n_desc_cols = (
+            X_desc.shape[1] if (self.use_descriptors and X_desc is not None) else 0
+        )
 
         self.preprocessor_ = make_preprocessor(
-            self.use_fingerprints, self.use_descriptors,
-            n_fp_cols, n_desc_cols,
-            self.svd_components, self.random_state,
+            self.use_fingerprints,
+            self.use_descriptors,
+            n_fp_cols,
+            n_desc_cols,
+            self.svd_components,
+            self.random_state,
         )
-        self.target_transformer_ = QuantileTransformer(output_distribution='normal', random_state=self.random_state)
+        self.target_transformer_ = QuantileTransformer(
+            output_distribution="normal", random_state=self.random_state
+        )
         X_proc = self.preprocessor_.fit_transform(X)
         y_transf = self.target_transformer_.fit_transform(y)
 
         default_xgb = dict(
-            tree_method='hist',
+            tree_method="hist",
             device=self.device,
-            objective='reg:pseudohubererror',
-            multi_strategy='one_output_per_tree',
+            objective="reg:pseudohubererror",
+            multi_strategy="one_output_per_tree",
             n_estimators=2000,
             early_stopping_rounds=50 if smiles_val is not None else None,
             random_state=self.random_state,
         )
-        print('-' * 80)
+        print("-" * 80)
         print(default_xgb)
         print(self.xgb_params)
-        print('-' * 80)
+        print("-" * 80)
         self.model_ = xgb.XGBRegressor(**{**default_xgb, **self.xgb_params})
 
         if smiles_val is not None:
@@ -129,7 +144,8 @@ class XGBoostRegressor():
             )
             y_val_t = self.target_transformer_.transform(y_val)
             self.model_.fit(
-                X_proc, y_transf,
+                X_proc,
+                y_transf,
                 eval_set=[(X_val_proc, y_val_t)],
                 verbose=False,
             )
@@ -144,7 +160,9 @@ class XGBoostRegressor():
         X_fp: Optional[np.ndarray] = None,
         X_desc: Optional[np.ndarray] = None,
     ) -> np.ndarray:
-        X_proc   = self.preprocessor_.transform(self._featurize(smiles_list, X_fp, X_desc))
+        X_proc = self.preprocessor_.transform(
+            self._featurize(smiles_list, X_fp, X_desc)
+        )
         y_transf = self.model_.predict(X_proc)
         if y_transf.ndim == 1:
             y_transf = y_transf.reshape(-1, 1)
@@ -158,9 +176,9 @@ class XGBoostRegressor():
         X_desc: Optional[np.ndarray] = None,
     ) -> float:
         y_pred = self.predict(smiles_list, X_fp, X_desc)
-        return float(np.mean([
-            r2_score(y[:, i], y_pred[:, i]) for i in range(y.shape[1])
-        ]))
+        return float(
+            np.mean([r2_score(y[:, i], y_pred[:, i]) for i in range(y.shape[1])])
+        )
 
     def save(self, path: str) -> None:
         """Save to two files: {path}.skops (sklearn) + {path}.ubj (XGBoost).
@@ -171,7 +189,7 @@ class XGBoostRegressor():
         Args:
             path (str): Base path without extension, e.g. 'models/xgb_regressor'.
         """
-        if not hasattr(self, 'model_'):
+        if not hasattr(self, "model_"):
             raise ValueError("Cannot save an unfitted model. Call fit() first.")
         Path(path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -184,7 +202,7 @@ class XGBoostRegressor():
         xgb_model.save_model(f"{path}.ubj")
 
     @classmethod
-    def load(cls, path: str) -> 'XGBoostRegressor':
+    def load(cls, path: str) -> "XGBoostRegressor":
         """Load from {path}.skops and {path}.ubj.
 
         Args:
@@ -194,7 +212,7 @@ class XGBoostRegressor():
             Restored XGBoostRegressor instance.
         """
         unknown_types = sio.get_untrusted_types(file=f"{path}.skops")
-        allowed = ('XGBoostRegressor', 'numpy.dtype')
+        allowed = ("XGBoostRegressor", "numpy.dtype")
         for t in unknown_types:
             if not any(a in t for a in allowed):
                 raise ValueError(
@@ -204,3 +222,19 @@ class XGBoostRegressor():
         instance.model_ = xgb.XGBRegressor()
         instance.model_.load_model(f"{path}.ubj")
         return instance
+
+    @classmethod
+    def from_hf(cls, hf_path: str, model_id: str) -> "XGBoostRegressor":
+        """Load a model from HuggingFace Hub.
+
+        Args:
+            hf_path (str): Path to the HuggingFace Hub repository.
+            model_id (str): Model ID on HF Hub, e.g. "model_name".
+
+        Returns:
+            Restored XGBoostRegressor instance.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hf.snapshot_download(hf_path, local_dir=tmpdir)
+            path = Path(tmpdir) / model_id
+            return cls.load(str(path))
