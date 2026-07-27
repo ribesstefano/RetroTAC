@@ -382,8 +382,7 @@ class TorchMLPRegressor:
         for t in unknown:
             if not any(a in t for a in allowed):
                 raise ValueError(f"Untrusted type '{t}' in skops file. Aborting load.")
-        print(Path(f"{path}.skops").exists())
-        print(Path(f"{path}.pt").exists())
+
         instance = sio.load(f"{path}.skops", trusted=unknown)
         ckpt = torch.load(f"{path}.pt", map_location="cpu")
         lit = LitMLP(**ckpt["arch"])
