@@ -106,7 +106,11 @@ class CheMeleonRegressor:
         )
 
         # ── pretrained CheMeleon backbone + fresh regression head ──────────
-        ckpt = torch.load(self.chemeleon_weights, weights_only=True)
+        ckpt = torch.load(
+            self.chemeleon_weights,
+            weights_only=True,
+            map_location=torch.device(self.device),
+        )
         mp = cpnn.BondMessagePassing(**ckpt["hyper_parameters"])
         mp.load_state_dict(ckpt["state_dict"])
         agg = cpnn.MeanAggregation()
@@ -177,7 +181,9 @@ class CheMeleonRegressor:
     @classmethod
     def load(cls, path):
         instance = cls()
-        instance.model_ = cpmodels.MPNN.load_from_checkpoint(f"{path}.ckpt")
+        instance.model_ = cpmodels.MPNN.load_from_checkpoint(
+            f"{path}.ckpt", map_location=torch.device(instance.device)
+        )
         instance.trainer_ = pl.Trainer(
             accelerator="auto", devices=1, logger=False, enable_progress_bar=False
         )
