@@ -179,8 +179,8 @@ class CheMeleonRegressor:
         self.trainer_.save_checkpoint(f"{path}.ckpt")
 
     @classmethod
-    def load(cls, path):
-        instance = cls()
+    def load(cls, path, device="cpu"):
+        instance = cls(device=device)
         instance.model_ = cpmodels.MPNN.load_from_checkpoint(
             f"{path}.ckpt", map_location=torch.device(instance.device)
         )
@@ -190,12 +190,15 @@ class CheMeleonRegressor:
         return instance
 
     @classmethod
-    def from_hf(cls, hf_path: str, model_id: str) -> "CheMeleonRegressor":
+    def from_hf(
+        cls, hf_path: str, model_id: str, device: str = "cpu"
+    ) -> "CheMeleonRegressor":
         """Load a model from HuggingFace Hub.
 
         Args:
             hf_path (str): Path to the HuggingFace Hub repository.
             model_id (str): Model ID on HF Hub, e.g. "model_name".
+            device (str): Compute device to load the checkpoint onto.
 
         Returns:
             Restored CheMeleonRegressor instance.
@@ -203,4 +206,4 @@ class CheMeleonRegressor:
         with tempfile.TemporaryDirectory() as tmpdir:
             hf.snapshot_download(hf_path, local_dir=tmpdir)
             path = Path(tmpdir) / model_id
-            return cls.load(str(path))
+            return cls.load(str(path), device=device)
