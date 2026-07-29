@@ -82,4 +82,4 @@ include = ["protac_synth*"]
 package = true
 
 [tool.uv.sources]
-protac-splitter = { git = "https://github.com/ribesstefano/PROTAC-Splitter.git", rev = "version-update" }
+protac-splitter = { git = "https://github.com/ribesstefano/PROTAC-Splitter.git", rev = "refactor" }
