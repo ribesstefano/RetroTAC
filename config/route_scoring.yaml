@@ -22,6 +22,7 @@ weights:
 # Transform settings. The length term uses RetroScore's parameter-free
 transforms:
   neutral_balance: 0.5  # balance value used when a route has no 2+ reactant steps
+  length_saturation: 12   # lls at which the length reaches 0
 
 # Anchors for the two empty-route cases (no tree, so ease can't be computed).
 bands:
