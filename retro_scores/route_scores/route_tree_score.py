@@ -32,9 +32,9 @@ for exact heavy-atom counts; the scorer falls back to a SMILES approximation if
 RDKit is unavailable.
 
     uv run python retro_scores/route_scores/route_tree_score.py \\
-      --input data/raw/routes.csv \\
+      --input data/llm_scoring/routes.csv \\
       --config config/route_scoring.yaml \\
-      --output data/outputs/routes_scored.csv \\
+      --output data/llm_scoring/routes_scored.csv \\
       --sep '\\t'
 
 The input CSV must contain a route column (a route dict such as
@@ -96,6 +96,9 @@ class ScoringConfig:
         }
     )
     neutral_balance: float = 0.5
+    # Length term for the LLS: RetroScore's 1 - log10(lls)/log10(length_saturation).
+    # lls=1 -> 1.0, so a one-step route keeps full length credit.
+    length_saturation: float = 12.0  # lls at which the length term reaches 0
     ceiling: float = 1.0  # empty route + resolved (purchasable): no tree to score
     floor: float = 0.0  # empty route + unresolved (unsolved): no tree to score
 
@@ -116,6 +119,7 @@ class ScoringConfig:
             route_col=cols.get("route", cls.route_col),
             weights=raw.get("weights", None) or cls().weights,
             neutral_balance=transforms.get("neutral_balance", cls.neutral_balance),
+            length_saturation=transforms.get("length_saturation", cls.length_saturation),
             ceiling=bands.get("ceiling", cls.ceiling),
             floor=bands.get("floor", cls.floor),
         )
@@ -258,6 +262,17 @@ def _fragment_balance(tree: RouteTree, neutral: float) -> float:
     return sum(step_balances) / len(step_balances) if step_balances else neutral
 
 
+def _length_term(lls: int, config: ScoringConfig) -> float:
+    """Map the longest linear sequence to a [0, 1] length score.
+
+    RetroScore's ``1 - log10(lls)/log10(length_saturation)`` (clipped at 0).
+    Yields 1.0 at lls=1; a higher ``length_saturation`` softens the penalty on
+    longer routes (reaches 0 once ``lls == length_saturation``).
+    """
+    lls = max(1, lls)
+    return max(0.0, 1.0 - math.log10(lls) / math.log10(config.length_saturation))
+
+
 def compute_metrics(tree: RouteTree, config: ScoringConfig) -> StructMetrics:
     """Compute the structural metrics and composite structural score for one route tree."""
     metrics = StructMetrics()
@@ -275,10 +290,8 @@ def compute_metrics(tree: RouteTree, config: ScoringConfig) -> StructMetrics:
     )
     metrics.fragment_balance = _fragment_balance(tree, config.neutral_balance)
 
-    # Length term: RetroScore's route-length score, RLScore = 1 - log10(len),
-    # adapted to the longest linear sequence and clipped to [0, 1]. Parameter-free
-    # (no dataset normalisation): lls=1 -> 1.0, lls=10 -> 0.0.
-    ease_lls = max(0.0, 1.0 - math.log10(max(1, metrics.lls)))
+    # Length term: RetroScore's RLScore-style log transform -- see _length_term.
+    ease_lls = _length_term(metrics.lls, config)
     weights = config.weights
     weighted_sum = (
         weights["lls"] * ease_lls
