@@ -57,7 +57,6 @@ from __future__ import annotations
 import argparse
 import ast
 import itertools
-import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
@@ -96,9 +95,9 @@ class ScoringConfig:
         }
     )
     neutral_balance: float = 0.5
-    # Length term for the LLS: RetroScore's 1 - log10(lls)/log10(length_saturation).
-    # lls=1 -> 1.0, so a one-step route keeps full length credit.
-    length_saturation: float = 12.0  # lls at which the length term reaches 0
+    # Length term for the LLS: linear decay 1 - (lls-1)/(lls_max-1), anchored so
+    # lls=1 -> 1.0 (a one-step route keeps full length credit) and lls=lls_max -> 0.
+    lls_max: float = 11.0  # observed max LLS; the length term reaches 0 here
     ceiling: float = 1.0  # empty route + resolved (purchasable): no tree to score
     floor: float = 0.0  # empty route + unresolved (unsolved): no tree to score
 
@@ -119,7 +118,7 @@ class ScoringConfig:
             route_col=cols.get("route", cls.route_col),
             weights=raw.get("weights", None) or cls().weights,
             neutral_balance=transforms.get("neutral_balance", cls.neutral_balance),
-            length_saturation=transforms.get("length_saturation", cls.length_saturation),
+            lls_max=transforms.get("lls_max", cls.lls_max),
             ceiling=bands.get("ceiling", cls.ceiling),
             floor=bands.get("floor", cls.floor),
         )
@@ -265,12 +264,12 @@ def _fragment_balance(tree: RouteTree, neutral: float) -> float:
 def _length_term(lls: int, config: ScoringConfig) -> float:
     """Map the longest linear sequence to a [0, 1] length score.
 
-    RetroScore's ``1 - log10(lls)/log10(length_saturation)`` (clipped at 0).
-    Yields 1.0 at lls=1; a higher ``length_saturation`` softens the penalty on
-    longer routes (reaches 0 once ``lls == length_saturation``).
+    Linear decay ``1 - (lls - 1) / (lls_max - 1)`` (clipped at 0). Anchored so
+    lls=1 -> 1.0 (a one-step route keeps full length credit) and lls=lls_max
+    -> 0. A higher ``lls_max`` softens the penalty on longer routes.
     """
     lls = max(1, lls)
-    return max(0.0, 1.0 - math.log10(lls) / math.log10(config.length_saturation))
+    return max(0.0, 1.0 - (lls - 1) / (config.lls_max - 1))
 
 
 def compute_metrics(tree: RouteTree, config: ScoringConfig) -> StructMetrics:
@@ -290,7 +289,7 @@ def compute_metrics(tree: RouteTree, config: ScoringConfig) -> StructMetrics:
     )
     metrics.fragment_balance = _fragment_balance(tree, config.neutral_balance)
 
-    # Length term: RetroScore's RLScore-style log transform -- see _length_term.
+    # Length term: linear decay anchored at lls=1 -- see _length_term.
     ease_lls = _length_term(metrics.lls, config)
     weights = config.weights
     weighted_sum = (

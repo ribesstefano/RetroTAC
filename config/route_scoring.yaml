@@ -9,22 +9,28 @@
 
 # Column names in the input CSV.
 columns:
-  smiles: SMILES       
-  resolved: resolved   
-  route: route         
+  smiles: SMILES        # molecule identifier carried into the summary
+  resolved: resolved    # boolean-ish solvability flag (gates the tier)
+  route: route          # the route dict, e.g. "{1: [['P => X.Y', label]], ...}"
 
 # Weights for the structural-ease composite (need not sum to 1; normalised).
 weights:
-  lls: 0.50         
-  coupling: 0.30    
-  balance: 0.20     
+  lls: 0.50         # longest linear sequence (length term, dominates difficulty)
+  coupling: 0.00    # share of steps joining 2+ fragments (convergent couplings)
+  balance: 0.50    # balanced module couplings vs small decorations
 
-# Transform settings. The length term uses RetroScore's parameter-free
+# Transform settings.
+#   length term: 1 - (lls - 1) / (lls_max - 1)  (linear decay, anchored so lls=1 -> 1.0)
+#   Raise lls_max to soften the penalty on longer routes.
 transforms:
-  neutral_balance: 0.5  # balance value used when a route has no 2+ reactant steps
-  length_saturation: 12   # lls at which the length reaches 0
+  neutral_balance: 0.5      # balance value used when a route has no 2+ reactant steps
+  lls_max: 11               # observed max lls; the length term reaches 0 here
 
 # Anchors for the two empty-route cases (no tree, so ease can't be computed).
+# Any route with reactions -- solved or unresolved -- scores at its structural ease.
+#   purchasable (resolved, empty route) -> ceiling
+#   solved / unresolved (has a route)   -> structural ease
+#   unsolved    (unresolved, empty)     -> floor
 bands:
   ceiling: 1.0   # purchasable as-is
   floor: 0.0     # unsolved (no route found)
