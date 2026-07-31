@@ -1,6 +1,8 @@
 #!/bin/bash
 #SBATCH --account=Berzelius-2026-62
-#SBATCH --partition=berzelius-cpu
+#SBATCH --partition=berzelius
+#SBATCH --gpus=1
+#SBATCH --reservation=1g.10gb
 #SBATCH --time=1-00:00:00
 #SBATCH --array=0-24
 #SBATCH -J xgb_cv
