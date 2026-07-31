@@ -27,6 +27,7 @@ dependencies = [
     "pyyaml>=6.0",
     "dotenv>=0.9.9",
     "huggingface-hub>=0.17",
+    "optuna>=4.2",
 ]
 
 [project.optional-dependencies]
@@ -34,7 +35,6 @@ dependencies = [
 # statistics, and PROTAC splitting. Not needed for plain inference.
 dev = [
     # Experiment tracking & tuning
-    "optuna>=4.2",
     "optuna-integration[pytorch-lightning]>=4.9.0",
     "wandb>=0.27",
     "lightning-utilities>=0.15.3",
