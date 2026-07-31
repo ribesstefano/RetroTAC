@@ -140,7 +140,7 @@ class CheMeleonRegressor:
             filename="best",
         )
         trainer = pl.Trainer(
-            accelerator=("cpu" if self.device == "cpu" else "auto"),
+            accelerator=self.device,
             devices=1,
             max_epochs=self.max_epochs,
             logger=False,
@@ -182,10 +182,10 @@ class CheMeleonRegressor:
     def load(cls, path, device="cpu"):
         instance = cls(device=device)
         instance.model_ = cpmodels.MPNN.load_from_checkpoint(
-            f"{path}.ckpt", map_location=torch.device(instance.device)
+            f"{path}.ckpt", map_location=torch.device(device)
         )
         instance.trainer_ = pl.Trainer(
-            accelerator="auto", devices=1, logger=False, enable_progress_bar=False
+            accelerator=device, devices=1, logger=False, enable_progress_bar=False
         )
         return instance
 
