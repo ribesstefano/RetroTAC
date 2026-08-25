@@ -5,24 +5,29 @@ MLP model (MLPNet architecture, AdamW, SmoothL1, early stopping,
 best-weight restore, Optuna pruning), the training loop is
 replaced by a LightningModule + pl.Trainer.
 """
+
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import huggingface_hub as hf
 import numpy as np
 import optuna
+import skops.io as sio
 import torch
 import torch.nn as nn
-import skops.io as sio
-from torch.utils.data import Dataset, DataLoader
 from lightning import pytorch as pl
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
-from sklearn.preprocessing import QuantileTransformer
 from sklearn.metrics import r2_score
+from sklearn.preprocessing import QuantileTransformer
+from torch.utils.data import DataLoader, Dataset
 
 from protac_synth.chem_utils import (  # noqa: E402
-    standardize_all, compute_fingerprints, sanitize_matrix, make_preprocessor,
+    compute_fingerprints,
+    make_preprocessor,
+    sanitize_matrix,
+    standardize_all,
 )
 
 
@@ -53,8 +58,12 @@ class MLPNet(nn.Module):
         # Stack n_layers of Linear→BatchNorm→ReLU→Dropout, then a final head.
         layers, in_dim = [], input_dim
         for _ in range(n_layers):
-            layers += [nn.Linear(in_dim, hidden_dim), nn.BatchNorm1d(hidden_dim),
-                       nn.ReLU(), nn.Dropout(dropout)]
+            layers += [
+                nn.Linear(in_dim, hidden_dim),
+                nn.BatchNorm1d(hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+            ]
             in_dim = hidden_dim
         layers.append(nn.Linear(in_dim, n_targets))
         self.net = nn.Sequential(*layers)
@@ -121,7 +130,9 @@ class TorchMLPRegressor:
         random_state: int = 42,
     ):
         if not use_fingerprints and not use_descriptors:
-            raise ValueError("At least one of use_fingerprints/use_descriptors must be True.")
+            raise ValueError(
+                "At least one of use_fingerprints/use_descriptors must be True."
+            )
         self.fp_size = fp_size
         self.fp_radius = fp_radius
         self.svd_components = svd_components
@@ -143,10 +154,14 @@ class TorchMLPRegressor:
         if self.use_fingerprints:
             # Compute fingerprints on demand only when not pre-supplied.
             if X_fp is None:
-                X_fp = compute_fingerprints(standardize_all(smiles_list), self.fp_size, self.fp_radius)
+                X_fp = compute_fingerprints(
+                    standardize_all(smiles_list), self.fp_size, self.fp_radius
+                )
             X_fp = sanitize_matrix(X_fp)
         if self.use_descriptors and X_desc is None:
-            raise ValueError("use_descriptors=True but no descriptor matrix was provided.")
+            raise ValueError(
+                "use_descriptors=True but no descriptor matrix was provided."
+            )
         parts = []
         if self.use_fingerprints:
             parts.append(X_fp)
@@ -165,7 +180,7 @@ class TorchMLPRegressor:
         X_fp_val: Optional[np.ndarray] = None,
         X_desc_val: Optional[np.ndarray] = None,
         trial: Optional[optuna.Trial] = None,
-    ) -> 'TorchMLPRegressor':
+    ) -> "TorchMLPRegressor":
         """Fit the MLP to featurized SMILES with early stopping.
 
         Args:
@@ -186,14 +201,22 @@ class TorchMLPRegressor:
         # ── preprocess: feature matrix + fitted feature/target transformers ─
         X = self._featurize(smiles_list, X_fp, X_desc)
         n_fp_cols = self.fp_size if self.use_fingerprints else 0
-        n_desc_cols = X_desc.shape[1] if (self.use_descriptors and X_desc is not None) else 0
+        n_desc_cols = (
+            X_desc.shape[1] if (self.use_descriptors and X_desc is not None) else 0
+        )
         self.preprocessor_ = make_preprocessor(
-            self.use_fingerprints, self.use_descriptors,
-            n_fp_cols, n_desc_cols, self.svd_components, self.random_state)
+            self.use_fingerprints,
+            self.use_descriptors,
+            n_fp_cols,
+            n_desc_cols,
+            self.svd_components,
+            self.random_state,
+        )
         # Map targets to a normal distribution — stabilizes the SmoothL1 loss
         # and is inverted at predict time.
         self.target_transformer_ = QuantileTransformer(
-            output_distribution='normal', random_state=self.random_state)
+            output_distribution="normal", random_state=self.random_state
+        )
         X_proc = self.preprocessor_.fit_transform(X)
         y_proc = self.target_transformer_.fit_transform(y)
 
@@ -209,9 +232,15 @@ class TorchMLPRegressor:
         input_dim = X_proc.shape[1]
         n_targets = y_proc.shape[1]
         # Stash the architecture so save()/load() can rebuild the net exactly.
-        self.arch_ = dict(input_dim=input_dim, n_layers=n_layers, hidden_dim=hidden_dim,
-                          n_targets=n_targets, dropout=dropout,
-                          learning_rate=learning_rate, weight_decay=weight_decay)
+        self.arch_ = dict(
+            input_dim=input_dim,
+            n_layers=n_layers,
+            hidden_dim=hidden_dim,
+            n_targets=n_targets,
+            dropout=dropout,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+        )
 
         pl.seed_everything(self.random_state, workers=True)
         lit = LitMLP(**self.arch_)
@@ -221,7 +250,8 @@ class TorchMLPRegressor:
             # Caller-provided validation set — transform it with the *fitted*
             # preprocessor (no refit) so train/val features stay comparable.
             X_val_proc = self.preprocessor_.transform(
-                self._featurize(smiles_val, X_fp_val, X_desc_val))
+                self._featurize(smiles_val, X_fp_val, X_desc_val)
+            )
             y_val_proc = self.target_transformer_.transform(y_val)
             X_tr_proc, y_tr_proc = X_proc, y_proc
         else:
@@ -233,30 +263,47 @@ class TorchMLPRegressor:
             X_tr_proc, y_tr_proc = X_proc[t], y_proc[t]
             X_val_proc, y_val_proc = X_proc[v], y_proc[v]
 
-        train_loader = DataLoader(TabularDataset(X_tr_proc, y_tr_proc),
-                                  batch_size=batch_size, shuffle=True, drop_last=True)
-        val_loader = DataLoader(TabularDataset(X_val_proc, y_val_proc),
-                                batch_size=batch_size, shuffle=False)
+        train_loader = DataLoader(
+            TabularDataset(X_tr_proc, y_tr_proc),
+            batch_size=batch_size,
+            shuffle=True,
+            drop_last=True,
+        )
+        val_loader = DataLoader(
+            TabularDataset(X_val_proc, y_val_proc), batch_size=batch_size, shuffle=False
+        )
 
         # ── callbacks: early stopping + best-weights + optional pruning ────
         tmpdir = tempfile.mkdtemp()
         early = EarlyStopping(monitor="val_loss", patience=self.patience, mode="min")
-        ckpt_cb = ModelCheckpoint(dirpath=tmpdir, monitor="val_loss", mode="min",
-                                  save_top_k=1, filename="best")
+        ckpt_cb = ModelCheckpoint(
+            dirpath=tmpdir,
+            monitor="val_loss",
+            mode="min",
+            save_top_k=1,
+            filename="best",
+        )
         callbacks = [early, ckpt_cb]
         # Only a real Optuna Trial (not a FixedTrial) supports pruning; the
         # integration import path moved between Optuna versions, hence the fallback.
         if isinstance(trial, optuna.Trial):
             try:
-                from optuna_integration.pytorch_lightning import PyTorchLightningPruningCallback
+                from optuna_integration.pytorch_lightning import (
+                    PyTorchLightningPruningCallback,
+                )
             except ImportError:
                 from optuna.integration import PyTorchLightningPruningCallback
             callbacks.append(PyTorchLightningPruningCallback(trial, monitor="val_loss"))
 
         trainer = pl.Trainer(
-            accelerator=("cpu" if self.device == "cpu" else "auto"), devices=1,
-            max_epochs=self.max_epochs, logger=False,
-            enable_checkpointing=True, enable_progress_bar=False, callbacks=callbacks)
+            accelerator=("cpu" if self.device == "cpu" else "auto"),
+            devices=1,
+            max_epochs=self.max_epochs,
+            logger=False,
+            enable_checkpointing=True,
+            enable_progress_bar=False,
+            callbacks=callbacks,
+        )
         trainer.fit(lit, train_loader, val_loader)
 
         # Restore the best-val-loss checkpoint (not the last epoch's weights).
@@ -273,7 +320,9 @@ class TorchMLPRegressor:
         X_fp: Optional[np.ndarray] = None,
         X_desc: Optional[np.ndarray] = None,
     ) -> np.ndarray:
-        X_proc = self.preprocessor_.transform(self._featurize(smiles_list, X_fp, X_desc))
+        X_proc = self.preprocessor_.transform(
+            self._featurize(smiles_list, X_fp, X_desc)
+        )
         self.model_.eval()
         device = next(self.model_.parameters()).device
         with torch.no_grad():
@@ -292,7 +341,9 @@ class TorchMLPRegressor:
         X_desc: Optional[np.ndarray] = None,
     ) -> float:
         y_pred = self.predict(smiles_list, X_fp, X_desc)
-        return float(np.mean([r2_score(y[:, i], y_pred[:, i]) for i in range(y.shape[1])]))
+        return float(
+            np.mean([r2_score(y[:, i], y_pred[:, i]) for i in range(y.shape[1])])
+        )
 
     def save(self, path: str) -> None:
         """Save to two files: {path}.pt (Torch weights) + {path}.skops (sklearn).
@@ -304,10 +355,12 @@ class TorchMLPRegressor:
         Args:
             path (str): Base path without extension.
         """
-        if not hasattr(self, 'model_'):
+        if not hasattr(self, "model_"):
             raise ValueError("Cannot save an unfitted model. Call fit() first.")
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        torch.save({"state_dict": self.model_.state_dict(), "arch": self.arch_}, f"{path}.pt")
+        torch.save(
+            {"state_dict": self.model_.state_dict(), "arch": self.arch_}, f"{path}.pt"
+        )
         # Temporarily detach the net so skops only sees sklearn objects.
         net = self.model_
         self.model_ = None
@@ -315,7 +368,7 @@ class TorchMLPRegressor:
         self.model_ = net
 
     @classmethod
-    def load(cls, path: str) -> 'TorchMLPRegressor':
+    def load(cls, path: str) -> "TorchMLPRegressor":
         """Load from {path}.skops and {path}.pt.
 
         Args:
@@ -325,10 +378,11 @@ class TorchMLPRegressor:
             Restored TorchMLPRegressor instance.
         """
         unknown = sio.get_untrusted_types(file=f"{path}.skops")
-        allowed = ('TorchMLPRegressor', 'numpy.dtype')
+        allowed = ("TorchMLPRegressor", "numpy.dtype")
         for t in unknown:
             if not any(a in t for a in allowed):
                 raise ValueError(f"Untrusted type '{t}' in skops file. Aborting load.")
+
         instance = sio.load(f"{path}.skops", trusted=unknown)
         ckpt = torch.load(f"{path}.pt", map_location="cpu")
         lit = LitMLP(**ckpt["arch"])
@@ -336,3 +390,19 @@ class TorchMLPRegressor:
         lit.eval()
         instance.model_ = lit
         return instance
+
+    @classmethod
+    def from_hf(cls, hf_path: str, model_id: str) -> "TorchMLPRegressor":
+        """Load a model from HuggingFace Hub.
+
+        Args:
+            hf_path (str): Path to the HuggingFace Hub repository.
+            model_id (str): Model ID on HF Hub, e.g. "model_name".
+
+        Returns:
+            Restored TorchMLPRegressor instance.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hf.snapshot_download(hf_path, local_dir=tmpdir)
+            path = Path(tmpdir) / model_id
+            return cls.load(str(path))
