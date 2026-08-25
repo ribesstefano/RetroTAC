@@ -13,12 +13,13 @@ import hashlib
 import logging
 import re
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 from rdkit import Chem, DataStructs, RDLogger
-from rdkit.Chem import Descriptors, rdFingerprintGenerator
+from rdkit.Chem import rdFingerprintGenerator
 from rdkit.Chem.MolStandardize import rdMolStandardize
 from rdkit.Chem.Scaffolds.MurckoScaffold import GetScaffoldForMol, MakeScaffoldGeneric
 from rdkit.ML.Descriptors import MoleculeDescriptors
@@ -36,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 # ── SMILES primitives ─────────────────────────────────────────────────────────
+
 
 def smiles_to_mol(smi: Any) -> Optional[Any]:
     """Parse a SMILES string into an RDKit Mol, handling NaN and non-string inputs.
@@ -128,6 +130,7 @@ def smiles_hash(smiles: str, length: int = 8) -> str:
 
 # ── Fingerprinting ────────────────────────────────────────────────────────────
 
+
 def morgan_fp(mol: Any, radius: int = 3, nbits: int = 2048) -> Any:
     """Compute a Morgan (circular) fingerprint for a RDKit Mol.
 
@@ -174,7 +177,7 @@ def smiles_to_component_fp(smi: Any) -> Optional[Any]:
     s = str(smi).strip()
     if not s:
         return None
-    s = re.sub(r'\[\*:\d+\]', '[H]', s)
+    s = re.sub(r"\[\*:\d+\]", "[H]", s)
     s = s.replace("*", "[H]")
     mol = Chem.MolFromSmiles(s)
     if mol is None:
@@ -188,37 +191,37 @@ def smiles_to_component_fp(smi: Any) -> Optional[Any]:
 # Defined at module level because RDKit SMARTS compilation is expensive and
 # fg_vector is called once per molecule in tight selection loops.
 _FG_SMARTS: Dict[str, str] = {
-    "imidazole":          "[nH]1ccnc1",
-    "pyridine":           "n1ccccc1",
-    "pyrimidine":         "n1ccncc1",
-    "triazole":           "n1nncc1",
-    "oxazole":            "o1ccnc1",
-    "thiazole":           "s1ccnc1",
-    "indole":             "c1ccc2[nH]ccc2c1",
-    "benzimidazole":      "c1cnc2ccccc2n1",
-    "piperazine":         "N1CCNCC1",
-    "piperidine":         "N1CCCCC1",
-    "morpholine":         "N1CCOCC1",
-    "amide":              "C(=O)N",
-    "urea":               "NC(=O)N",
-    "sulfonamide":        "S(=O)(=O)N",
-    "carbamate":          "OC(=O)N",
-    "ester":              "C(=O)OC",
-    "carboxylic_acid":    "C(=O)[OH]",
-    "primary_amine":      "[NH2]",
-    "secondary_amine":    "[NH1;!$(NC=O)]",
-    "hydroxyl":           "[OX2H]",
-    "thiol":              "[SH]",
-    "fluorine":           "[F]",
-    "chlorine":           "[Cl]",
-    "bromine":            "[Br]",
-    "acrylamide":         "C=CC(=O)N",
-    "chloroacetamide":    "ClCC(=O)N",
-    "epoxide":            "C1OC1",
-    "vinyl_sulfone":      "C=CS(=O)(=O)",
-    "peg_ether":          "COCCO",
-    "alkyl_chain_c4":     "CCCC",
-    "glutarimide":        "O=C1CCC(=O)N1",
+    "imidazole": "[nH]1ccnc1",
+    "pyridine": "n1ccccc1",
+    "pyrimidine": "n1ccncc1",
+    "triazole": "n1nncc1",
+    "oxazole": "o1ccnc1",
+    "thiazole": "s1ccnc1",
+    "indole": "c1ccc2[nH]ccc2c1",
+    "benzimidazole": "c1cnc2ccccc2n1",
+    "piperazine": "N1CCNCC1",
+    "piperidine": "N1CCCCC1",
+    "morpholine": "N1CCOCC1",
+    "amide": "C(=O)N",
+    "urea": "NC(=O)N",
+    "sulfonamide": "S(=O)(=O)N",
+    "carbamate": "OC(=O)N",
+    "ester": "C(=O)OC",
+    "carboxylic_acid": "C(=O)[OH]",
+    "primary_amine": "[NH2]",
+    "secondary_amine": "[NH1;!$(NC=O)]",
+    "hydroxyl": "[OX2H]",
+    "thiol": "[SH]",
+    "fluorine": "[F]",
+    "chlorine": "[Cl]",
+    "bromine": "[Br]",
+    "acrylamide": "C=CC(=O)N",
+    "chloroacetamide": "ClCC(=O)N",
+    "epoxide": "C1OC1",
+    "vinyl_sulfone": "C=CS(=O)(=O)",
+    "peg_ether": "COCCO",
+    "alkyl_chain_c4": "CCCC",
+    "glutarimide": "O=C1CCC(=O)N1",
     "vhl_hydroxyproline": "[C@@H]1(O)C[C@H]",
 }
 
@@ -262,6 +265,7 @@ def jaccard_fg(v1: np.ndarray, v2: np.ndarray) -> float:
 
 # ── ID generation ─────────────────────────────────────────────────────────────
 
+
 def make_sequential_ids(series: pd.Series, prefix: str) -> pd.Series:
     """Assign sequential IDs (e.g. ``WH_001``) in order of first appearance.
 
@@ -299,11 +303,16 @@ def make_hash_ids(series: pd.Series, prefix: str) -> pd.Series:
 # ── Surrogate-model feature computation ────────────────────────────────────────
 
 # Shared across compute_descriptors' default calculator/n_desc args below.
-DESCRIPTOR_NAMES = [name for name, _ in Descriptors._descList if name != "Ipc"]
-DESCRIPTOR_CALCULATOR = MoleculeDescriptors.MolecularDescriptorCalculator(DESCRIPTOR_NAMES)
+with open(Path(__file__).parent / "descriptor_names.txt", "r") as f:
+    DESCRIPTOR_NAMES = [line.strip() for line in f if line.strip()]
+DESCRIPTOR_CALCULATOR = MoleculeDescriptors.MolecularDescriptorCalculator(
+    DESCRIPTOR_NAMES
+)
 
 
-def compute_fingerprints(mols: List[Any], fp_size: int = 512, fp_radius: int = 3) -> np.ndarray:
+def compute_fingerprints(
+    mols: List[Any], fp_size: int = 512, fp_radius: int = 3
+) -> np.ndarray:
     """Compute Morgan fingerprints for pre-standardized Mols.
 
     Args:
@@ -346,7 +355,9 @@ def compute_descriptors(
         if mol is None:
             rows.append(np.full(n_desc, np.nan, dtype=np.float32))
         else:
-            vals = np.clip(np.array(calculator.CalcDescriptors(mol), dtype=np.float64), -1e4, 1e4)
+            vals = np.clip(
+                np.array(calculator.CalcDescriptors(mol), dtype=np.float64), -1e4, 1e4
+            )
             rows.append(vals.astype(np.float32))
     return np.vstack(rows)
 
@@ -393,31 +404,45 @@ def make_preprocessor(
     # fingerprint block: optional dimensionality reduction
     fp_processor = (
         TruncatedSVD(n_components=svd_components, random_state=random_state)
-        if svd_components else 'passthrough'
+        if svd_components
+        else "passthrough"
     )
 
     # descriptor block: fill NaNs -> drop constant cols -> standardize
-    desc_pipeline = SkPipeline([
-        ('impute',     SimpleImputer(strategy='median')),
-        ('var_thresh', VarianceThreshold(threshold=0.0)),
-        ('scale',      StandardScaler()),
-    ])
+    desc_pipeline = SkPipeline(
+        [
+            ("impute", SimpleImputer(strategy="median")),
+            ("var_thresh", VarianceThreshold(threshold=0.0)),
+            ("scale", StandardScaler()),
+        ]
+    )
 
     # both active -> split columns and apply each processor to its block
     if use_fingerprints and use_descriptors:
-        return SkPipeline([
-            ('ct', ColumnTransformer([
-                ('fp',   fp_processor,  slice(0, n_fp_cols)),
-                ('desc', desc_pipeline, slice(n_fp_cols, n_fp_cols + n_desc_cols)),
-            ])),
-        ])
+        return SkPipeline(
+            [
+                (
+                    "ct",
+                    ColumnTransformer(
+                        [
+                            ("fp", fp_processor, slice(0, n_fp_cols)),
+                            (
+                                "desc",
+                                desc_pipeline,
+                                slice(n_fp_cols, n_fp_cols + n_desc_cols),
+                            ),
+                        ]
+                    ),
+                ),
+            ]
+        )
 
     # fingerprints only
     if use_fingerprints:
-        return SkPipeline([('fp', fp_processor)])
+        return SkPipeline([("fp", fp_processor)])
 
     # descriptors only
-    return SkPipeline([('desc', desc_pipeline)])
+    return SkPipeline([("desc", desc_pipeline)])
 
 
 def get_scaffold(smiles: str, generic: bool = False) -> str:
@@ -432,7 +457,7 @@ def get_scaffold(smiles: str, generic: bool = False) -> str:
         scaffold is empty (e.g. acyclic molecules).
     """
     mol = smiles_to_mol(smiles)
-    if mol is None:                      # unparseable -> fall back, don't crash
+    if mol is None:  # unparseable -> fall back, don't crash
         return smiles
     if generic:
         scaffold = Chem.MolToSmiles(MakeScaffoldGeneric(mol))
@@ -464,7 +489,7 @@ def scaffold_train_test_split(
     for i, smi in enumerate(smiles_list):
         scaffold_to_idx[get_scaffold(smi, generic=generic)].append(i)
 
-    rng    = np.random.default_rng(random_state)
+    rng = np.random.default_rng(random_state)
     groups = list(scaffold_to_idx.keys())
     rng.shuffle(groups)
 
@@ -474,10 +499,13 @@ def scaffold_train_test_split(
             break
         test_idx.update(scaffold_to_idx[sc])
 
-    return np.array(["test" if i in test_idx else "train" for i in range(len(smiles_list))])
+    return np.array(
+        ["test" if i in test_idx else "train" for i in range(len(smiles_list))]
+    )
 
 
 # ── pandas / tqdm utility ─────────────────────────────────────────────────────
+
 
 def papply(series: pd.Series, func: Any, desc: str) -> pd.Series:
     """Apply *func* to *series* with a labelled tqdm progress bar.
