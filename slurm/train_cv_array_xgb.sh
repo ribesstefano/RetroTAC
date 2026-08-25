@@ -2,7 +2,7 @@
 #SBATCH --account=Berzelius-2026-62
 #SBATCH --partition=berzelius
 #SBATCH --gpus=1
-#SBATCH --cpus-per-task=16
+#SBATCH --reservation=1g.10gb
 #SBATCH --time=1-00:00:00
 #SBATCH --array=0-24
 #SBATCH -J xgb_cv
@@ -25,10 +25,10 @@
 set -euo pipefail
 
 # Run from the repo root regardless of where sbatch was invoked from.
-cd $SLURM_SBMIT_DIR
+cd $SLURM_SUBMIT_DIR
 
 MODEL=xgb
-INPUT=data/llm_scoring/routes_llm_scores.csv
+INPUT=data/protac_synth_data.csv
 CONFIG=config/models_config.yaml
 OUTPUT_ROOT=outputs/
 PREFIX=v1
@@ -42,7 +42,7 @@ FOLD=$((SLURM_ARRAY_TASK_ID % N_FOLDS))
 
 echo "task ${SLURM_ARRAY_TASK_ID}: model=${MODEL} seed=${SEED} fold=${FOLD}"
 
-.venv/bin/python scripts/models/train.py \
+uv run scripts/models/train.py \
     --model "$MODEL" \
     --input "$INPUT" \
     --config "$CONFIG" \
