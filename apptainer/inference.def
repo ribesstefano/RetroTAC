@@ -1,0 +1,90 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+# Default profile: everything a regular user needs to run a saved XGB/MLP/GNN
+# surrogate model (protac_synth core deps -- no training or scoring extras)
+# plus `notebooks` (jupyter/jupyterlab/ipywidgets) for interactive use -- see
+# the `notebook` app below and apptainer/README.md, "Developing against a
+# container". See apptainer/README.md for the general recipe this follows.
+
+%files
+    pyproject.toml /opt/repo/pyproject.toml
+    uv.lock /opt/repo/uv.lock
+    protac_synth /opt/repo/protac_synth
+    scripts /opt/repo/scripts
+    config /opt/repo/config
+
+%post
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl git build-essential libxrender1 libxext6 libsm6
+    rm -rf /var/lib/apt/lists/*
+
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/opt/uv-bin sh
+    export PATH="/opt/uv-bin:${PATH}"
+    uv python install 3.12
+
+    # UV_PROJECT_ENVIRONMENT keeps the venv OUTSIDE /opt/repo, so bind-mounting
+    # a live checkout over /opt/repo at runtime (see apptainer/README.md) never
+    # shadows it.
+    export UV_CACHE_DIR=/opt/uv-cache
+    export UV_PROJECT_ENVIRONMENT=/opt/venv
+    cd /opt/repo
+    uv sync --frozen --extra notebooks
+    rm -rf /opt/uv-cache
+
+%environment
+    export VIRTUAL_ENV=/opt/venv
+    export PATH=/opt/uv-bin:/opt/venv/bin:${PATH}
+    export UV_PROJECT_ENVIRONMENT=/opt/venv
+
+%runscript
+    cd /opt/repo
+    exec python "$@"
+
+%apprun predict
+    cd /opt/repo
+    exec python scripts/models/predict.py "$@"
+
+%apprun notebook
+    cd /opt/repo
+    exec jupyter lab --no-browser --ip=0.0.0.0 --port="${JUPYTER_PORT:-8888}" \
+        --notebook-dir=/opt/repo "$@"
+
+%labels
+    profile inference
+    pyproject_extra none (base dependencies only) notebooks
+
+%help
+    Inference-only container: run a saved PROTAC synthesizability model.
+
+    Build (from the repo root):
+        apptainer build --fakeroot apptainer/inference.sif apptainer/inference.def
+
+    Run (bind-mounts your live checkout over the image's code so you're
+    always running the code currently on disk, not a stale build-time copy;
+    see apptainer/bind_live_repo.sh and apptainer/README.md):
+        apptainer run $(bash apptainer/bind_live_repo.sh) \
+            apptainer/inference.sif scripts/models/predict.py \
+            --model xgb --model-path outputs/models/xgb_default \
+            --input data/new_molecules.csv --output data/scored.csv
+
+    Or via the predict app shortcut:
+        apptainer run --app predict $(bash apptainer/bind_live_repo.sh) \
+            apptainer/inference.sif --model xgb --model-path outputs/models/xgb_default \
+            --input data/new_molecules.csv --output data/scored.csv
+
+    Note: xgboost's PyPI wheel is CUDA-enabled and probes for a usable GPU
+    even for CPU-only work; on a host with a present-but-unusable GPU (e.g.
+    compute_mode=Prohibited, as on the Berzelius login node) this raises
+    XGBoostError for .fit() regardless of device='cpu' (confirmed), and
+    .predict() goes through the same code path, so treat plain inference as
+    suspect there too until checked. If you hit this, request a SLURM GPU
+    job and add --nv to the apptainer command, as for training.
+
+    Interactive development / notebooks (see apptainer/README.md,
+    "Developing against a container" for the full SSH-tunnel walkthrough):
+        apptainer run --app notebook $(bash apptainer/bind_live_repo.sh) \
+            apptainer/inference.sif

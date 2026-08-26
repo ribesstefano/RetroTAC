@@ -27,14 +27,21 @@ a single place to edit them. Layout assumed (repo root):
     └── external/
         ├── SCScore/                <- git clone CatSci/SCScore
         └── GASA/                   <- git clone cadd-synthetic/GASA
+
+Set PROTAC_EXTERNAL_DIR to override the external/ location instead (used by
+apptainer/scoring.def, which bakes these into the image at a path outside
+the live-code bind mount so they aren't shadowed by a host checkout that
+doesn't have them -- see apptainer/README.md).
 """
 
+import os
 from pathlib import Path
 
 # mol_scores/ (package) -> retro_scores/ (sub-project root) -> PROJECT_ROOT
 # (adjust the index if your nesting differs)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-EXTERNAL_DIR = PROJECT_ROOT / "external"
+EXTERNAL_DIR = Path(os.environ["PROTAC_EXTERNAL_DIR"]) if "PROTAC_EXTERNAL_DIR" in os.environ \
+    else PROJECT_ROOT / "external"
 
 SCSCORE_DIR = EXTERNAL_DIR / "SCScore"
 GASA_DIR    = EXTERNAL_DIR / "GASA"
