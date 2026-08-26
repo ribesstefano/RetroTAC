@@ -43,9 +43,15 @@ Export the `uv` to a proper location and activate the environment:
 ```bash
 export UV_CACHE_DIR="/proj/berzelius-2026-62/users/x_steri/.cache"
 mamba activate env-protac-synth
-uv sync --extra dev --extra retrosynth # For Stefano and Andrea, training and retrosynthesis stuff
+uv sync --extra training # For Stefano and Andrea, training stuff
 uv sync --all-extras # For Lukas, training only
 ```
+
+If `uv sync`/`mamba create` blow your `$HOME` file-count quota (each env is tens of
+thousands of small files), use the prebuilt Apptainer containers instead —
+see `apptainer/README.md`. There's one per profile above (`inference`,
+`training`, `scoring`), each a single `.sif` file regardless of how many
+packages it holds.
 
 ### Training
 

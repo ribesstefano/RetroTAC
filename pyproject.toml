@@ -5,8 +5,11 @@ description = "PROTAC synthesizability scoring pipeline"
 readme = "README.md"
 requires-python = "==3.12.*"
 # Core inference dependencies — everything a regular user needs to run the
-# trained models. Heavier or task-specific tooling lives in the optional
-# groups below (install with `uv sync --extra dev` / `--extra retrosynth`).
+# trained models (see scripts/models/predict.py). Heavier or task-specific
+# tooling lives in the optional groups below (install with `uv sync --extra
+# training` / `--extra scoring`). These three groups map 1:1 onto the three
+# Apptainer container profiles under apptainer/ (inference is the default —
+# no extra needed — since that's what most users only ever need).
 dependencies = [
     "rdkit>=2023.9.1",
     # Data science core
@@ -31,9 +34,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Development extras: model training/tracking, dataset handling, plotting,
+# Training extras: model training/tracking, dataset handling, plotting,
 # statistics, and PROTAC splitting. Not needed for plain inference.
-dev = [
+# -> apptainer/training.def
+training = [
     # Experiment tracking & tuning
     "optuna-integration[pytorch-lightning]>=4.9.0",
     "wandb>=0.27",
@@ -51,14 +55,29 @@ dev = [
     "protac-splitter",
 ]
 
-# Retrosynthetic analysis. aizynthfinder pins a wide dependency range and is
-# only needed to (re)generate synthesizability scores, not for inference.
-retrosynth = ["rdkit>=2023.9.1,<2024.0.0", "aizynthfinder==4.4.1"]
-
-# LLM-as-judge scoring of retrosynthesis routes
-llm_scoring = ["dspy>=2.6", "pydantic>=2.0"]
+# Molecule/route scoring: the lightweight, main-env half of the scoring
+# pipeline (scripts/chem_mol_scoring/, scripts/chem_route_scoring/,
+# retro_scores/route_scores/route_tree_score.py -- all pure rdkit/pandas,
+# already covered by the core deps above) plus LLM-as-judge route scoring.
+# The heavy SA/SC/RA/SYBA/GASA/FSscore stack (retro_scores/mol_scores/) is
+# NOT expressible here -- it needs its own Python-3.10 environment built by
+# hand per retro_scores/README.md; see apptainer/scoring.def, which bakes
+# both halves into one image.
+# -> apptainer/scoring.def
+scoring = ["dspy>=2.6", "pydantic>=2.0"]
 
 notebooks = ["jupyter>=1.1", "jupyterlab>=4.5", "ipywidgets>=7.8"]
+
+# NOTE: the former `retrosynth` extra (aizynthfinder) has been dropped
+# project-wide. Local AiZynthFinder-based route search
+# (scripts/retrosynthesis/get_component_routes_and_scores.py,
+# get_protac_routes_and_scores.py, retro_scores/route_scores/
+# aizynthfinder_utils.py's live-search helpers, protac_synth/stock_utils/)
+# is superseded by routes supplied externally (see SCORING.md Sec. 3.2) and
+# is no longer part of any supported environment or container. Those files
+# are left in place but are unsupported until aizynthfinder is installed
+# manually. This does NOT affect retro_scores/route_scores/hac_score.py
+# (pure rdkit, no aizynthfinder needed) -- see the `scoring` extra above.
 
 [build-system]
 requires = ["setuptools>=68"]
