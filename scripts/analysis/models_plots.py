@@ -13,15 +13,16 @@ import argparse
 import pickle
 import warnings
 from pathlib import Path
+from typing import Dict, List, Tuple
 
+import autorank
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import autorank
 import pingouin as pg
+from matplotlib.lines import Line2D
 from scipy.stats import spearmanr  # noqa: F401  (handy if you extend)
 from statsmodels.stats.libqsturng import psturng, qsturng
-from matplotlib.lines import Line2D
 
 # ── palette ─────────────────────────────────────────────────────────────────
 ROYAL_PURPLE = "#6A4C93"
@@ -35,7 +36,13 @@ COLOR_MAP = {"XGB": DEEP_TEAL, "MLP": FOREST_GREEN, "GNN": ROYAL_PURPLE}
 OUT_DIR = Path("figures")
 
 
-def save_fig(fig, name):
+def save_fig(fig: plt.Figure, name: str) -> None:
+    """Save a figure as both PNG and PDF under OUT_DIR.
+
+    Args:
+        fig: Figure to save.
+        name: Base filename (without extension).
+    """
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for ext in ("png", "pdf"):
         fig.savefig(OUT_DIR / f"{name}.{ext}", dpi=200, bbox_inches="tight")
@@ -43,7 +50,13 @@ def save_fig(fig, name):
 
 
 # ── Fig 1: CV fold R2 boxplots (one subplot per model) ──────────────────────
-def plot_cv_boxplots(fold_scores, prefix=""):
+def plot_cv_boxplots(fold_scores: Dict[str, List[float]], prefix: str = "") -> None:
+    """Save one boxplot subplot per model, showing per-fold CV R2 scores.
+
+    Args:
+        fold_scores: Model label -> list of per-fold R2 scores.
+        prefix: Optional filename prefix for the saved figure.
+    """
     n     = len(fold_scores)
     ncols = min(3, n)
     nrows = int(np.ceil(n / ncols))
@@ -81,7 +94,23 @@ def plot_cv_boxplots(fold_scores, prefix=""):
 
 
 # ── Fig 2: repeated-measures Tukey HSD, mean ± CI ───────────────────────────
-def rm_tukey_hsd(df, metric, group_col, alpha=0.05):
+def rm_tukey_hsd(df: pd.DataFrame, metric: str, group_col: str, alpha: float = 0.05) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Run a repeated-measures ANOVA + Tukey HSD post-hoc pairwise comparison.
+
+    Args:
+        df: Long-format frame with `metric`, `group_col`, and a `cv_cycle`
+            paired-sample id column (see `build_cv_frames` in
+            models_evaluation.py).
+        metric: Name of the column to compare (e.g. "r2").
+        group_col: Name of the grouping column (e.g. "method").
+        alpha: Unused; kept for interface symmetry with `plot_multiple_comparisons`.
+
+    Returns:
+        Tuple of (df_means, pc):
+            df_means: Per-group mean of `metric`, indexed by `group_col`.
+            pc: Symmetric matrix of Tukey-adjusted pairwise p-values, indexed
+                and columned by group label.
+    """
     df_means = df.groupby(group_col).mean(numeric_only=True)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -104,7 +133,15 @@ def rm_tukey_hsd(df, metric, group_col, alpha=0.05):
     return df_means, pc.astype(float)
 
 
-def plot_multiple_comparisons(df_cv, metric="r2", prefix="", alpha=0.05):
+def plot_multiple_comparisons(df_cv: pd.DataFrame, metric: str = "r2", prefix: str = "", alpha: float = 0.05) -> None:
+    """Save a mean ± 95% CI comparison plot with Tukey-HSD significance coloring.
+
+    Args:
+        df_cv: Long-format CV scores frame (see `rm_tukey_hsd`).
+        metric: Name of the column to compare.
+        prefix: Optional filename prefix for the saved figure.
+        alpha: Significance threshold for marking a method "significantly worse".
+    """
     df_means, pc = rm_tukey_hsd(df_cv, metric, group_col="method", alpha=alpha)
     df_means = df_means.sort_values(metric, ascending=True)
     labels = df_means.index.tolist()
@@ -141,7 +178,8 @@ def plot_multiple_comparisons(df_cv, metric="r2", prefix="", alpha=0.05):
     save_fig(fig, f"{prefix}reg_multiple_comparisons")
 
 
-def main():
+def main() -> None:
+    """CLI entry point: load exported CV artifacts and save the comparison figures."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", default="data/outputs/results/comparison",
                     help="folder with cv_fold_scores.pkl and cv_scores_long.csv")
