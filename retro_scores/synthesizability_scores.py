@@ -10,7 +10,7 @@ README.md), installed separately from the main protac_synth environment.
 
 Example
 -------
-    python scripts/retrosynthesis/synthesizability_scores.py \
+    python retro_scores/synthesizability_scores.py \
         data/protac_synth_data.csv \
         data/protac_synth_scores.csv \
         --smiles-col molecule

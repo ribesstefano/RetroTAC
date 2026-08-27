@@ -33,6 +33,8 @@ from protac_synth.chem_utils import (  # noqa: E402
 
 # ── tabular dataset ─────────────────────────────────────────────────────────
 class TabularDataset(Dataset):
+    """Wraps a preprocessed feature/target matrix pair as a torch Dataset."""
+
     def __init__(self, X: np.ndarray, y: np.ndarray):
         self.X = torch.as_tensor(X, dtype=torch.float32)
         self.y = torch.as_tensor(y, dtype=torch.float32)
@@ -46,6 +48,9 @@ class TabularDataset(Dataset):
 
 # ── architecture ─────────────────────────────────────────────────────────────
 class MLPNet(nn.Module):
+    """Plain feed-forward net: n_layers of Linear-BatchNorm-ReLU-Dropout + a
+    final linear regression head."""
+
     def __init__(
         self,
         input_dim: int,
@@ -74,6 +79,13 @@ class MLPNet(nn.Module):
 
 # ── LightningModule: the training/validation/optimizer logic ────────────────
 class LitMLP(pl.LightningModule):
+    """LightningModule wrapping MLPNet with the train/val loop and optimizer.
+
+    save_hyperparameters() persists the constructor args so
+    load_from_checkpoint() can rebuild the exact same architecture without
+    external bookkeeping (see TorchMLPRegressor.load).
+    """
+
     def __init__(
         self,
         input_dim: int,
@@ -94,18 +106,22 @@ class LitMLP(pl.LightningModule):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
-    def training_step(self, batch, batch_idx):
+    def training_step(
+        self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int
+    ) -> torch.Tensor:
         x, y = batch
         loss = self.criterion(self(x), y)
         self.log("train_loss", loss, on_epoch=True, on_step=False)
         return loss
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(
+        self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int
+    ) -> None:
         x, y = batch
         # Logged as "val_loss" — the metric early stopping / checkpoint watch.
         self.log("val_loss", self.criterion(self(x), y), prog_bar=True)
 
-    def configure_optimizers(self):
+    def configure_optimizers(self) -> torch.optim.Optimizer:
         return torch.optim.AdamW(
             self.parameters(),
             lr=self.hparams.learning_rate,
@@ -115,6 +131,15 @@ class LitMLP(pl.LightningModule):
 
 # ── sklearn-style wrapper matching the harness ──────────────────────────────
 class TorchMLPRegressor:
+    """Sklearn-style wrapper around a Lightning-trained MLP (LitMLP/MLPNet).
+
+    Handles feature assembly (Morgan fingerprints + RDKit descriptors),
+    preprocessing (SVD/imputation/scaling via make_preprocessor), target
+    scaling (QuantileTransformer), and the Lightning train/early-stop loop
+    behind a fit/predict/score/save/load contract shared with the xgb/gnn
+    backends (see training.py).
+    """
+
     def __init__(
         self,
         fp_size: int = 512,
@@ -129,6 +154,28 @@ class TorchMLPRegressor:
         uncharge: bool = False,
         random_state: int = 42,
     ):
+        """Store config; the LitMLP itself is built lazily in fit().
+
+        Args:
+            fp_size: Morgan fingerprint bit-vector length.
+            fp_radius: Morgan fingerprint bond-hop radius.
+            svd_components: TruncatedSVD output dims for the fingerprint
+                block passed to make_preprocessor; 0 disables SVD.
+            use_fingerprints: Whether the feature matrix includes fingerprints.
+            use_descriptors: Whether the feature matrix includes RDKit descriptors.
+            mlp_params: Architecture/optimizer hyperparameters (n_layers,
+                hidden_dim, dropout, learning_rate, weight_decay, batch_size);
+                missing keys fall back to defaults inside fit().
+            max_epochs: Maximum training epochs.
+            patience: Early-stopping patience in epochs.
+            device: Lightning accelerator selector ("auto", "cpu", or GPU).
+            uncharge: Unused by this backend; kept for config parity.
+            random_state: Seed for Lightning's global RNG, the fallback
+                train/val split, and the target QuantileTransformer.
+
+        Raises:
+            ValueError: If both use_fingerprints and use_descriptors are False.
+        """
         if not use_fingerprints and not use_descriptors:
             raise ValueError(
                 "At least one of use_fingerprints/use_descriptors must be True."
@@ -151,6 +198,22 @@ class TorchMLPRegressor:
         X_fp: Optional[np.ndarray] = None,
         X_desc: Optional[np.ndarray] = None,
     ) -> np.ndarray:
+        """Assemble the [fingerprint | descriptor] feature matrix.
+
+        Args:
+            smiles_list: SMILES strings; used to compute fingerprints only
+                when X_fp is not already supplied.
+            X_fp: Pre-computed fingerprint matrix, or None to compute on demand.
+            X_desc: Pre-computed descriptor matrix; required when
+                use_descriptors=True.
+
+        Returns:
+            Horizontally stacked, sanitized feature matrix (whichever blocks
+            are enabled).
+
+        Raises:
+            ValueError: If use_descriptors=True but X_desc is None.
+        """
         if self.use_fingerprints:
             # Compute fingerprints on demand only when not pre-supplied.
             if X_fp is None:
@@ -320,6 +383,18 @@ class TorchMLPRegressor:
         X_fp: Optional[np.ndarray] = None,
         X_desc: Optional[np.ndarray] = None,
     ) -> np.ndarray:
+        """Predict targets for SMILES not seen during fit().
+
+        Args:
+            smiles_list: SMILES strings to predict on.
+            X_fp: Pre-computed fingerprints, or None to compute on demand.
+            X_desc: Pre-computed descriptors, required when use_descriptors=True.
+
+        Returns:
+            Array of shape [len(smiles_list), n_targets] in real (unscaled)
+            units — the target QuantileTransformer fit during fit() is
+            inverted before returning.
+        """
         X_proc = self.preprocessor_.transform(
             self._featurize(smiles_list, X_fp, X_desc)
         )
@@ -340,6 +415,17 @@ class TorchMLPRegressor:
         X_fp: Optional[np.ndarray] = None,
         X_desc: Optional[np.ndarray] = None,
     ) -> float:
+        """Mean per-target R2 on (smiles_list, y).
+
+        Args:
+            smiles_list: SMILES strings to score.
+            y: True targets, shape [n_samples, n_targets].
+            X_fp: Pre-computed fingerprints, or None to compute on demand.
+            X_desc: Pre-computed descriptors, required when use_descriptors=True.
+
+        Returns:
+            Mean R2 across target columns.
+        """
         y_pred = self.predict(smiles_list, X_fp, X_desc)
         return float(
             np.mean([r2_score(y[:, i], y_pred[:, i]) for i in range(y.shape[1])])

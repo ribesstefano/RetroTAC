@@ -22,11 +22,13 @@ import json
 import pickle
 import sys
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
+import autorank
 import numpy as np
 import pandas as pd
 import yaml
-import autorank
+from scipy.stats import levene
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))   # -> chem_utils
@@ -50,7 +52,12 @@ USE_DESCRIPTORS  = _CFG["features"]["use_descriptors"]
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
-def parse_args():
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the model comparison CLI.
+
+    Returns:
+        Parsed arguments namespace.
+    """
     ap = argparse.ArgumentParser(description="Compare surrogate models from CV fold scores.")
     ap.add_argument("--models", nargs="+", required=True,
                     help="model prefixes to compare, e.g. xgb_v1 mlp_v1 gnn_v1")
@@ -67,10 +74,19 @@ def _label(prefix: str) -> str:
 
 
 # ── Step 1: load per-fold CV scores from JSON ───────────────────────────────
-def load_fold_scores(prefix: str) -> dict:
-    """Return {(seed, fold): r2} for one model prefix.
+def load_fold_scores(prefix: str) -> Dict[Tuple[int, int], float]:
+    """Load the per-(seed, fold) R2 scores for one model prefix.
+
     Files are flat under cv/{prefix}/ (distinguished by name/extension:
-    score_*.json, best_params_*.json, trials_*.csv, *.db)."""
+    score_*.json, best_params_*.json, trials_*.csv, *.db).
+
+    Args:
+        prefix: Model prefix, e.g. "xgb_v1".
+
+    Returns:
+        Mapping from (seed, fold) to the R2 score, for every fold whose
+        score JSON exists on disk.
+    """
     base   = CV_DIR / prefix
     scores = {}
     for seed in CV_SEEDS:
@@ -82,8 +98,23 @@ def load_fold_scores(prefix: str) -> dict:
     return scores
 
 
-def build_cv_frames(model_prefixes):
-    """Build the paired wide frame (for AutoRank) and a long frame (for plotting)."""
+def build_cv_frames(model_prefixes: List[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Build the paired wide frame (for AutoRank) and a long frame (for plotting).
+
+    Args:
+        model_prefixes: Model prefixes to compare, e.g. ["xgb_v1", "mlp_v1"].
+
+    Returns:
+        Tuple of (wide, long):
+            wide: Columns are model labels, rows are (seed, fold)-indexed R2,
+                restricted to folds present for every model (paired comparison).
+            long: One row per (method, seed, fold) with a `cv_cycle` id linking
+                paired samples across methods, for rm-Tukey / boxplots.
+
+    Raises:
+        RuntimeError: If no model has any fold scores, or if no (seed, fold)
+            combination is shared across all models.
+    """
     per_model = {}                    # label -> {(seed,fold): r2}
     for prefix in model_prefixes:
         s = load_fold_scores(prefix)
@@ -122,9 +153,47 @@ def build_cv_frames(model_prefixes):
 
 
 # ── Step 2: AutoRank statistical comparison ─────────────────────────────────
-def run_autorank(wide: pd.DataFrame, out_dir: Path):
+def check_parametric(wide: pd.DataFrame, variance_ratio_threshold: float = 9.0) -> bool:
+    """Check whether per-model fold variances are homogeneous enough for a parametric test.
+
+    Combines Levene's test with a variance-ratio heuristic, since Levene's p-value
+    alone gets oversensitive to trivial differences as sample size grows: variances
+    are only treated as unequal when Levene rejects homogeneity AND the max/min
+    variance ratio exceeds `variance_ratio_threshold`.
+
+    Args:
+        wide: Paired wide frame (columns = model labels) from `build_cv_frames`.
+        variance_ratio_threshold: Max/min fold-variance ratio above which a
+            significant Levene result is treated as a real violation (default 9,
+            a common rule of thumb).
+
+    Returns:
+        True if variances are homogeneous enough to force AutoRank's parametric path.
+    """
+    variances = wide.var()
+    var_ratio = variances.max() / variances.min()
+    _, pvalue = levene(*(wide[col].values for col in wide.columns))
+
+    is_parametric = not (pvalue < 0.05 and var_ratio > variance_ratio_threshold)
+    verdict = "homogeneous" if is_parametric else "NOT equal -> non-parametric required"
+    print(f"  Levene's test: p={pvalue:.4f} | max/min fold-variance ratio={var_ratio:.4f} "
+          f"-> variances {verdict}")
+    return is_parametric
+
+
+def run_autorank(wide: pd.DataFrame, out_dir: Path) -> Any:
+    """Run AutoRank's statistical comparison and persist its ranking table.
+
+    Args:
+        wide: Paired wide frame (columns = model labels) from `build_cv_frames`.
+        out_dir: Directory to write `autorank_rankdf.csv` into.
+
+    Returns:
+        The `autorank.autorank` result object.
+    """
     print("\n── AutoRank ─────────────────────────────────────────────────────────")
-    result = autorank.autorank(wide, alpha=0.05, verbose=False)
+    force_mode = "parametric" if check_parametric(wide) else None
+    result = autorank.autorank(wide, alpha=0.05, verbose=False, force_mode=force_mode)
     autorank.create_report(result)
 
     # persist the ranking table for the plotting script (figures are made in plots.py)
@@ -134,8 +203,19 @@ def run_autorank(wide: pd.DataFrame, out_dir: Path):
 
 
 # ── Step 3 (optional): evaluate final models on a held-out test set ─────────
-def _load_model(prefix: str):
-    """Load the saved final model for a prefix using its class's loader."""
+def _load_model(prefix: str) -> Any:
+    """Load the saved final model for a prefix using its class's loader.
+
+    Args:
+        prefix: Model prefix, e.g. "xgb_v1"; the leading token before "_"
+            selects the loader class.
+
+    Returns:
+        The loaded model instance.
+
+    Raises:
+        ValueError: If the prefix's leading token isn't xgb/mlp/gnn.
+    """
     kind = prefix.split("_")[0]
     base = str(MODELS_DIR / prefix / f"{prefix}_final")
     if kind == "xgb":
@@ -150,15 +230,33 @@ def _load_model(prefix: str):
     raise ValueError(f"Unknown model kind: {kind}")
 
 
-def _test_features(smiles):
-    from protac_synth.chem_utils import standardize_all, compute_fingerprints, compute_descriptors
+def _test_features(smiles: List[str]) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Standardize test-set SMILES and compute the model input features.
+
+    Args:
+        smiles: Raw SMILES strings from the test CSV.
+
+    Returns:
+        Tuple of (fingerprints, descriptors); either may be None if disabled
+        via USE_FINGERPRINTS / USE_DESCRIPTORS in the model config.
+    """
+    from protac_synth.chem_utils import compute_descriptors, compute_fingerprints, standardize_all
     mols   = standardize_all(smiles)
     X_fp   = compute_fingerprints(mols, FP_SIZE, FP_RADIUS) if USE_FINGERPRINTS else None
     X_desc = compute_descriptors(mols) if USE_DESCRIPTORS else None
     return X_fp, X_desc
 
 
-def _metrics(y_true, y_pred):
+def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+    """Compute mean R2/RMSE/MAE across target columns.
+
+    Args:
+        y_true: Ground-truth targets, shape (n_samples, n_targets).
+        y_pred: Predicted targets, same shape as `y_true`.
+
+    Returns:
+        Dict with keys "R2", "RMSE", "MAE".
+    """
     n = y_true.shape[1]
     return {
         "R2":   float(np.mean([r2_score(y_true[:, i], y_pred[:, i]) for i in range(n)])),
@@ -167,7 +265,21 @@ def _metrics(y_true, y_pred):
     }
 
 
-def evaluate_test(model_prefixes, test_csv):
+def evaluate_test(model_prefixes: List[str], test_csv: str) -> Tuple[Dict[str, Dict[str, np.ndarray]], Dict[str, Dict[str, float]]]:
+    """Load each final model and score it on a held-out test CSV.
+
+    Args:
+        model_prefixes: Model prefixes to evaluate, e.g. ["xgb_v1", "mlp_v1"].
+        test_csv: Path to a CSV with a "molecule" SMILES column and the
+            configured TARGET column.
+
+    Returns:
+        Tuple of (predictions, results):
+            predictions: label -> {"y_pred": array, "y_true": array}.
+            results: label -> {"R2": ..., "RMSE": ..., "MAE": ...}.
+        A model whose load or predict raises is skipped from both dicts
+        (a warning is printed instead of aborting the whole comparison).
+    """
     df = pd.read_csv(test_csv)
     smiles = df["molecule"].tolist()
     y_true = df[[TARGET]].values
@@ -189,7 +301,8 @@ def evaluate_test(model_prefixes, test_csv):
 
 
 # ── main ────────────────────────────────────────────────────────────────────
-def main():
+def main() -> None:
+    """CLI entry point: load CV fold scores, run AutoRank, and optionally test-eval."""
     args    = parse_args()
     out_dir = RESULTS_DIR / args.out
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -232,7 +232,7 @@ column named `molecule` by default (override with `--smiles-col`); output gets
 the raw + scaled score columns appended.
 
 ```bash
-python scripts/retrosynthesis/synthesizability_scores.py \
+python retro_scores/synthesizability_scores.py \
     data/raw/<input>.csv \
     data/synth_scores/<output>.csv \
     --smiles-col molecule
@@ -268,3 +268,39 @@ what's actually installed — this table is the curated subset that matters;
 avoid committing a full `pip freeze` dump (a past one leaked a GitHub token
 via an editable self-install — see `git log` for `requirements_scoring.txt`
 if you need the history).
+
+---
+
+## Notes on Graph-Based Scores
+
+Several metrics quantify how "branchy" a tree is depending on whether you care about leaf density, branching symmetry, or hierarchical nesting:
+
+**Basic Structural Metrics**
+
+* **Leaf-to-Node Ratio ($L / N$):** Measures pure tip density. A linear path graph has a minimum ratio of $\frac{2}{N}$, while a star graph (one hub connected to all nodes) has a maximum ratio of $\frac{N-1}{N}$.
+* **Diameter vs. Size ($D / N$):** The longest shortest path between any two leaves. A low diameter relative to node count indicates a bushy, dense, or star-like tree, while $D \approx N$ indicates a linear, unbranched chain.
+* **Wiener Index ($W(T)$):** The sum of all pairwise shortest path distances:
+
+$$W(T) = \sum_{u < v} d(u, v)$$
+
+$W(T)$ reaches its maximum on a linear path (least branchy) and its minimum on a star graph (maximally branchy).
+
+**Phylogenetic & Balance Indices (Rooted Trees)**
+
+* **Colless Index ($I_C$):** Measures the symmetry of bifurcations across all internal nodes $v$:
+
+$$I_C = \sum_{v \in V_{int}} \vert{}T_{L}(v) - T_{R}(v)\vert{}$$
+
+where $T_L$ and $T_R$ are the sizes of the left and right subtrees. Completely balanced trees score $0$; linear combs score maximal asymmetry.
+* **Sackin Index ($I_S$):** The sum of the depths of all leaves from the root:
+
+$$I_S = \sum_{l \in \text{Leaves}} \text{depth}(l)$$
+
+Minimizes on balanced, bushy trees ($O(N \log N)$) and maximizes on line-like caterpillar trees ($O(N^2)$).
+
+**Hierarchical & Flow Metrics**
+
+* **Horton–Strahler Number:** Used extensively in hydrology, botany, and neuroscience to measure branching complexity. Leaves start at order $1$. When two branches of order $i$ meet, the parent becomes order $i + 1$; if orders differ, the parent inherits the higher order. A high Strahler number indicates deep, recursive multi-scale branching.
+* **Ramification Index / Bifurcation Ratio ($R_B$):** The ratio of branches of order $i$ to branches of order $i + 1$:
+
+$$R_B = \frac{N_i}{N_{i+1}}$$

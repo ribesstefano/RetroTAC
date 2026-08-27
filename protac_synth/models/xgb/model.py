@@ -1,3 +1,11 @@
+"""
+xgb/model.py
+============
+Sklearn-style XGBoost regressor wrapping fingerprint/descriptor featurization,
+preprocessing, and target scaling behind a fit/predict/score/save/load
+contract shared with the mlp/gnn backends (see training.py).
+"""
+
 import tempfile
 from pathlib import Path
 from typing import List, Optional
@@ -21,6 +29,13 @@ RDLogger.DisableLog("rdApp.*")
 
 
 class XGBoostRegressor:
+    """Sklearn-style wrapper around XGBoost with fp/descriptor featurization.
+
+    Handles feature assembly (Morgan fingerprints + RDKit descriptors),
+    preprocessing (SVD/imputation/scaling via make_preprocessor), and target
+    scaling (QuantileTransformer) around a plain xgboost.XGBRegressor.
+    """
+
     def __init__(
         self,
         fp_size: int = 512,
@@ -28,11 +43,29 @@ class XGBoostRegressor:
         svd_components: int = 64,
         use_fingerprints: bool = True,
         use_descriptors: bool = True,
-        xgb_params: dict = None,
+        xgb_params: Optional[dict] = None,
         uncharge: bool = False,
         random_state: int = 42,
         device: str = "cpu",
     ):
+        """Store config; the XGBRegressor itself is built lazily in fit().
+
+        Args:
+            fp_size: Morgan fingerprint bit-vector length.
+            fp_radius: Morgan fingerprint bond-hop radius.
+            svd_components: TruncatedSVD output dims for the fingerprint
+                block passed to make_preprocessor; 0 disables SVD.
+            use_fingerprints: Whether the feature matrix includes fingerprints.
+            use_descriptors: Whether the feature matrix includes RDKit descriptors.
+            xgb_params: Extra/overriding kwargs merged into the default
+                XGBRegressor params at fit time.
+            uncharge: Unused by this backend; kept for config parity.
+            random_state: Seed for SVD and the target QuantileTransformer.
+            device: XGBoost compute device ("cpu" or "cuda").
+
+        Raises:
+            ValueError: If both use_fingerprints and use_descriptors are False.
+        """
         if not use_fingerprints and not use_descriptors:
             raise ValueError(
                 "At least one of use_fingerprints or use_descriptors must be True."
@@ -53,6 +86,22 @@ class XGBoostRegressor:
         X_fp: Optional[np.ndarray] = None,
         X_desc: Optional[np.ndarray] = None,
     ) -> np.ndarray:
+        """Assemble the [fingerprint | descriptor] feature matrix.
+
+        Args:
+            smiles_list: SMILES strings; used to compute fingerprints only
+                when X_fp is not already supplied.
+            X_fp: Pre-computed fingerprint matrix, or None to compute on demand.
+            X_desc: Pre-computed descriptor matrix; required when
+                use_descriptors=True.
+
+        Returns:
+            Horizontally stacked, sanitized feature matrix (whichever blocks
+            are enabled).
+
+        Raises:
+            ValueError: If use_descriptors=True but X_desc is None.
+        """
         if self.use_fingerprints:
             if X_fp is None:
                 X_fp = compute_fingerprints(
@@ -86,14 +135,17 @@ class XGBoostRegressor:
         """Fit XGBoost to featurized SMILES.
 
         Args:
-            smiles_list (List[str]): Training SMILES strings.
-            y (np.ndarray): Training targets, shape [n_samples, n_targets].
-            X_fp (np.ndarray, optional): Pre-computed training fingerprints,
-                required when use_fingerprints=True.
-            smiles_val (List[str], optional): Validation SMILES for early stopping.
-            y_val (np.ndarray, optional): Validation targets for early stopping.
-            X_fp_val (np.ndarray, optional): Pre-computed validation fingerprints,
-                required when use_fingerprints=True and smiles_val is provided.
+            smiles_list: Training SMILES strings.
+            y: Training targets, shape [n_samples, n_targets].
+            X_fp: Pre-computed training fingerprints; computed on demand when
+                None and use_fingerprints=True.
+            X_desc: Pre-computed training descriptors, required when
+                use_descriptors=True.
+            smiles_val: Validation SMILES for early stopping (optional).
+            y_val: Validation targets for early stopping (optional).
+            X_fp_val: Pre-computed validation fingerprints (optional).
+            X_desc_val: Pre-computed validation descriptors, required when
+                use_descriptors=True and smiles_val is provided.
 
         Returns:
             self
@@ -160,6 +212,18 @@ class XGBoostRegressor:
         X_fp: Optional[np.ndarray] = None,
         X_desc: Optional[np.ndarray] = None,
     ) -> np.ndarray:
+        """Predict targets for SMILES not seen during fit().
+
+        Args:
+            smiles_list: SMILES strings to predict on.
+            X_fp: Pre-computed fingerprints, or None to compute on demand.
+            X_desc: Pre-computed descriptors, required when use_descriptors=True.
+
+        Returns:
+            Array of shape [len(smiles_list), n_targets] in real (unscaled)
+            units — the target QuantileTransformer fit during fit() is
+            inverted before returning.
+        """
         X_proc = self.preprocessor_.transform(
             self._featurize(smiles_list, X_fp, X_desc)
         )
@@ -175,6 +239,17 @@ class XGBoostRegressor:
         X_fp: Optional[np.ndarray] = None,
         X_desc: Optional[np.ndarray] = None,
     ) -> float:
+        """Mean per-target R2 on (smiles_list, y).
+
+        Args:
+            smiles_list: SMILES strings to score.
+            y: True targets, shape [n_samples, n_targets].
+            X_fp: Pre-computed fingerprints, or None to compute on demand.
+            X_desc: Pre-computed descriptors, required when use_descriptors=True.
+
+        Returns:
+            Mean R2 across target columns.
+        """
         y_pred = self.predict(smiles_list, X_fp, X_desc)
         return float(
             np.mean([r2_score(y[:, i], y_pred[:, i]) for i in range(y.shape[1])])

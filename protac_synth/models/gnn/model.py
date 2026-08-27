@@ -9,14 +9,13 @@ Requires: chemprop>=2.2.0, lightning. Download the CheMeleon weights once:
     urlretrieve("https://zenodo.org/records/15460715/files/chemeleon_mp.pt", "chemeleon_mp.pt")
 """
 
+import tempfile
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import huggingface_hub as hf
 import numpy as np
 import torch
-
-print("cuda available:", torch.cuda.is_available(), flush=True)
-import tempfile
-from pathlib import Path
-
 from chemprop import data as cpdata
 from chemprop import featurizers
 from chemprop import models as cpmodels
@@ -25,17 +24,40 @@ from lightning import pytorch as pl
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from sklearn.metrics import r2_score
 
+print("cuda available:", torch.cuda.is_available(), flush=True)
+
 
 class CheMeleonRegressor:
+    """Sklearn-style wrapper around a CheMeleon D-MPNN fine-tuned for regression.
+
+    Graph-based: featurizes molecules directly from SMILES via ChemProp, so
+    the X_fp/X_desc arguments accepted by fit/predict/score exist only to
+    match the tabular models' call signature and are otherwise ignored.
+    """
+
     def __init__(
         self,
-        gnn_params=None,
-        chemeleon_weights="chemeleon_mp.pt",
-        max_epochs=100,
-        patience=15,
-        random_state=42,
-        device="cpu",
+        gnn_params: Optional[Dict[str, Any]] = None,
+        chemeleon_weights: str = "chemeleon_mp.pt",
+        max_epochs: int = 100,
+        patience: int = 15,
+        random_state: int = 42,
+        device: str = "cpu",
     ):
+        """Store config; the network itself is built lazily in fit().
+
+        Args:
+            gnn_params: FFN head / optimizer hyperparameters (dropout,
+                ffn_hidden_dim, ffn_n_layers, max_lr, batch_size); missing
+                keys fall back to defaults inside fit().
+            chemeleon_weights: Path to the pretrained CheMeleon backbone
+                checkpoint (BondMessagePassing state dict).
+            max_epochs: Maximum training epochs.
+            patience: Early-stopping patience in epochs.
+            random_state: Seed for Lightning's global RNG and the fallback
+                train/val split.
+            device: Compute device for the Lightning trainer ("cpu" or GPU).
+        """
         self.gnn_params = gnn_params or {}
         self.chemeleon_weights = chemeleon_weights
         self.max_epochs = max_epochs
@@ -43,7 +65,10 @@ class CheMeleonRegressor:
         self.random_state = random_state
         self.device = device
 
-    def _datapoints(self, smiles_list, y=None):
+    def _datapoints(
+        self, smiles_list: List[str], y: Optional[np.ndarray] = None
+    ) -> List[Any]:
+        """Wrap SMILES (and optional targets) into ChemProp MoleculeDatapoints."""
         if y is None:
             return [cpdata.MoleculeDatapoint.from_smi(s) for s in smiles_list]
         return [
@@ -52,16 +77,34 @@ class CheMeleonRegressor:
 
     def fit(
         self,
-        smiles_list,
-        y,
-        X_fp=None,
-        X_desc=None,
-        smiles_val=None,
-        y_val=None,
-        X_fp_val=None,
-        X_desc_val=None,
-        trial=None,
-    ):
+        smiles_list: List[str],
+        y: np.ndarray,
+        X_fp: Optional[np.ndarray] = None,
+        X_desc: Optional[np.ndarray] = None,
+        smiles_val: Optional[List[str]] = None,
+        y_val: Optional[np.ndarray] = None,
+        X_fp_val: Optional[np.ndarray] = None,
+        X_desc_val: Optional[np.ndarray] = None,
+        trial: Optional[Any] = None,
+    ) -> "CheMeleonRegressor":
+        """Fine-tune the CheMeleon backbone + a fresh regression head.
+
+        Args:
+            smiles_list: Training SMILES strings.
+            y: Training targets, shape [n_samples, n_targets].
+            X_fp: Ignored; accepted for signature parity with tabular models.
+            X_desc: Ignored; accepted for signature parity with tabular models.
+            smiles_val: Validation SMILES for early stopping; when omitted a
+                10% split is carved from the training data instead.
+            y_val: Validation targets.
+            X_fp_val: Ignored; accepted for signature parity with tabular models.
+            X_desc_val: Ignored; accepted for signature parity with tabular models.
+            trial: Unused (no pruning support here, unlike the MLP backend);
+                accepted for a uniform build_fn call signature.
+
+        Returns:
+            self
+        """
         pl.seed_everything(self.random_state, workers=True)
 
         p = self.gnn_params
@@ -159,27 +202,75 @@ class CheMeleonRegressor:
         self.trainer_ = trainer
         return self
 
-    def predict(self, smiles_list, X_fp=None, X_desc=None):
+    def predict(
+        self,
+        smiles_list: List[str],
+        X_fp: Optional[np.ndarray] = None,
+        X_desc: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        """Predict targets for SMILES not seen during fit().
+
+        Args:
+            smiles_list: SMILES strings to predict on.
+            X_fp: Ignored; accepted for signature parity with tabular models.
+            X_desc: Ignored; accepted for signature parity with tabular models.
+
+        Returns:
+            Array of shape [len(smiles_list), n_targets] in real (unscaled)
+            units — ChemProp's UnscaleTransform undoes the target scaling
+            applied during fit() inside the model's forward pass.
+        """
         featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
         dset = cpdata.MoleculeDataset(self._datapoints(smiles_list), featurizer)
         loader = cpdata.build_dataloader(dset, num_workers=0, shuffle=False)
         preds = self.trainer_.predict(self.model_, loader)  # list of [batch, n_targets]
         return torch.cat(preds).numpy()  # already unscaled
 
-    def score(self, smiles_list, y, X_fp=None, X_desc=None):
+    def score(
+        self,
+        smiles_list: List[str],
+        y: np.ndarray,
+        X_fp: Optional[np.ndarray] = None,
+        X_desc: Optional[np.ndarray] = None,
+    ) -> float:
+        """Mean per-target R2 on (smiles_list, y).
+
+        Args:
+            smiles_list: SMILES strings to score.
+            y: True targets, shape [n_samples, n_targets].
+            X_fp: Ignored; accepted for signature parity with tabular models.
+            X_desc: Ignored; accepted for signature parity with tabular models.
+
+        Returns:
+            Mean R2 across target columns.
+        """
         y_pred = self.predict(smiles_list, X_fp, X_desc)
         return float(
             np.mean([r2_score(y[:, i], y_pred[:, i]) for i in range(y.shape[1])])
         )
 
-    def save(self, path):
+    def save(self, path: str) -> None:
+        """Save the fitted model as a Lightning checkpoint at {path}.ckpt.
+
+        Args:
+            path: Base path without extension.
+        """
         if not hasattr(self, "trainer_"):
             raise ValueError("Cannot save an unfitted model. Call fit() first.")
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.trainer_.save_checkpoint(f"{path}.ckpt")
 
     @classmethod
-    def load(cls, path, device="cpu"):
+    def load(cls, path: str, device: str = "cpu") -> "CheMeleonRegressor":
+        """Load a fitted model from {path}.ckpt.
+
+        Args:
+            path: Base path without extension.
+            device: Compute device to load the checkpoint onto.
+
+        Returns:
+            Restored CheMeleonRegressor instance.
+        """
         instance = cls(device=device)
         instance.model_ = cpmodels.MPNN.load_from_checkpoint(
             f"{path}.ckpt", map_location=torch.device(device)

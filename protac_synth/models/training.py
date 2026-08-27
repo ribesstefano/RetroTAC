@@ -15,13 +15,17 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-import yaml
 import numpy as np
-import pandas as pd
 import optuna
+import pandas as pd
+import yaml
 from optuna.trial import FixedTrial
 
-from protac_synth.chem_utils import standardize_all, compute_fingerprints, compute_descriptors
+from protac_synth.chem_utils import (
+    compute_descriptors,
+    compute_fingerprints,
+    standardize_all,
+)
 
 
 # ── Model dispatch (lazy import so a run pulls in only its backend) ──────────
@@ -277,8 +281,8 @@ def tune_inner_fold(
     smiles_ival = df_train.iloc[inner_val_idx][molecule_col].tolist()
     y_itr = df_train.iloc[inner_train_idx][[target]].values
     y_ival = df_train.iloc[inner_val_idx][[target]].values
-    X_fp_itr = X_fp[inner_train_idx] if X_fp  is not None else None
-    X_fp_ival = X_fp[inner_val_idx] if X_fp  is not None else None
+    X_fp_itr = X_fp[inner_train_idx] if X_fp is not None else None
+    X_fp_ival = X_fp[inner_val_idx] if X_fp is not None else None
     X_desc_itr = X_desc[inner_train_idx] if X_desc is not None else None
     X_desc_ival = X_desc[inner_val_idx] if X_desc is not None else None
 
@@ -303,12 +307,12 @@ def tune_inner_fold(
         shutil.copy(persist_db, local_db)
 
     study = optuna.create_study(
-        study_name = f"{prefix}_{seed}_fold{fold_idx}",
-        direction = "maximize",
-        storage = f"sqlite:///{local_db}",
-        load_if_exists = True,
-        sampler = optuna.samplers.TPESampler(seed=seed + fold_idx),
-        pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=3),
+        study_name=f"{prefix}_{seed}_fold{fold_idx}",
+        direction="maximize",
+        storage=f"sqlite:///{local_db}",
+        load_if_exists=True,
+        sampler=optuna.samplers.TPESampler(seed=seed + fold_idx),
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=3),
     )
 
     def _snapshot(study, trial):
@@ -394,8 +398,8 @@ def run_single_fold(
     smiles_val = df_train.iloc[fold_val_idx][molecule_col].tolist()
     y_tr = df_train.iloc[fold_train_idx][[target]].values
     y_val = df_train.iloc[fold_val_idx][[target]].values
-    X_fp_tr = X_fp[fold_train_idx] if X_fp  is not None else None
-    X_fp_val = X_fp[fold_val_idx] if X_fp  is not None else None
+    X_fp_tr = X_fp[fold_train_idx] if X_fp is not None else None
+    X_fp_val = X_fp[fold_val_idx] if X_fp is not None else None
     X_desc_tr = X_desc[fold_train_idx] if X_desc is not None else None
     X_desc_val = X_desc[fold_val_idx] if X_desc is not None else None
 
