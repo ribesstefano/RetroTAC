@@ -27,11 +27,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import autorank
 import numpy as np
 import pandas as pd
-import yaml
 from scipy.stats import levene
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))   # -> chem_utils
+
+from protac_synth.models.config import ModelsConfig
 
 # ── paths + config (anchored to repo root, same as train.py) ────────────────
 _ROOT       = Path(__file__).parents[3]                 # PROTAC-Synthesizability/
@@ -40,15 +41,14 @@ CV_DIR      = OUTPUT_ROOT / "cv"
 MODELS_DIR  = OUTPUT_ROOT / "models"
 RESULTS_DIR = OUTPUT_ROOT / "results"
 
-with open(Path(__file__).resolve().parents[2] / "config" / "models_config.yaml") as f:
-    _CFG = yaml.safe_load(f)
-CV_SEEDS         = _CFG["cross_validation"]["seeds"]
-N_FOLDS          = _CFG["cross_validation"]["n_folds"]
-TARGET           = _CFG["target"]
-FP_SIZE          = _CFG["features"]["fp_size"]
-FP_RADIUS        = _CFG["features"]["fp_radius"]
-USE_FINGERPRINTS = _CFG["features"]["use_fingerprints"]
-USE_DESCRIPTORS  = _CFG["features"]["use_descriptors"]
+_CFG = ModelsConfig.load(Path(__file__).resolve().parents[2] / "config" / "models_config.yaml")
+CV_SEEDS         = _CFG.cross_validation.seeds
+N_FOLDS          = _CFG.cross_validation.n_folds
+TARGET           = _CFG.target
+FP_SIZE          = _CFG.features.fp_size
+FP_RADIUS        = _CFG.features.fp_radius
+USE_FINGERPRINTS = _CFG.features.use_fingerprints
+USE_DESCRIPTORS  = _CFG.features.use_descriptors
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────

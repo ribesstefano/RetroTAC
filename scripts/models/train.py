@@ -25,9 +25,9 @@ import argparse
 from pathlib import Path
 
 import pandas as pd
-import yaml
 
 from protac_synth.chem_utils import get_scaffold  # noqa: E402
+from protac_synth.models.config import ModelsConfig  # noqa: E402
 from protac_synth.models.training import (  # noqa: E402
     aggregate_results, cache_features, get_build_fn, prepare_inputs, run_single_fold,
 )
@@ -84,7 +84,7 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def main():
+def main() -> None:
     """Dispatch on the parsed args to one of the run modes.
 
     --precompute is a model-agnostic one-shot that caches features and exits.
@@ -103,17 +103,16 @@ def main():
             are missing in single-fold mode.
     """
     args = parse_args()
-    with open(args.config) as f:
-        cfg = yaml.safe_load(f)
+    cfg = ModelsConfig.load(args.config)
 
-    molecule_col = cfg["molecule_col"]
-    fp_size = cfg["features"]["fp_size"]
-    fp_radius = cfg["features"]["fp_radius"]
-    use_fingerprints = cfg["features"]["use_fingerprints"]
-    use_descriptors = cfg["features"]["use_descriptors"]
-    target = cfg["target"]
-    cv_seeds = cfg["cross_validation"]["seeds"]
-    n_folds = cfg["cross_validation"]["n_folds"]
+    molecule_col = cfg.molecule_col
+    fp_size = cfg.features.fp_size
+    fp_radius = cfg.features.fp_radius
+    use_fingerprints = cfg.features.use_fingerprints
+    use_descriptors = cfg.features.use_descriptors
+    target = cfg.target
+    cv_seeds = cfg.cross_validation.seeds
+    n_folds = cfg.cross_validation.n_folds
 
     # Create output directories
     cv_dir = args.output_root / "cv"
@@ -141,9 +140,9 @@ def main():
     # model-specific config forwarded to build_fn (absorbed by its **kwargs)
     if args.model == "gnn":
         build_kwargs = {
-            "max_epochs": cfg["torch"]["max_epochs"],
-            "patience": cfg["torch"]["patience"],
-            "chemeleon_weights": cfg.get("gnn", {}).get("chemeleon_weights", "chemeleon_mp.pt"),
+            "max_epochs": cfg.torch.max_epochs,
+            "patience": cfg.torch.patience,
+            "chemeleon_weights": cfg.gnn.chemeleon_weights,
             "device": args.device,
         }
     else:
@@ -156,7 +155,7 @@ def main():
 
     # batch_size is a fixed torch training param (not Optuna-tuned) for the NN models
     if args.model in ("mlp", "gnn"):
-        build_kwargs["batch_size"] = cfg["torch"]["batch_size"]
+        build_kwargs["batch_size"] = cfg.torch.batch_size
 
     # Run ID namespaces every output (study name, CV/model dirs, DBs); it must
     # include the model type so different models sharing a --prefix don't collide.
