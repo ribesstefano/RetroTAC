@@ -3,8 +3,8 @@ features:
   use_fingerprints: true
   use_descriptors: true
   tune_fp_radius: false
-  fp_radius: 3
-  fp_size: 512
+  fp_radius: 8
+  fp_size: 1024
 
 target: llm_score # hac_weighted_score   # your TARGET column name
 molecule_col: SMILES # molecule       # SMILES column name
