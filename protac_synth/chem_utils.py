@@ -131,7 +131,7 @@ def smiles_hash(smiles: str, length: int = 8) -> str:
 # ── Fingerprinting ────────────────────────────────────────────────────────────
 
 
-def morgan_fp(mol: Any, radius: int = 3, nbits: int = 2048) -> Any:
+def morgan_fp(mol: Any, radius: int = 8, nbits: int = 2048) -> Any:
     """Compute a Morgan (circular) fingerprint for a RDKit Mol.
 
     Args:
