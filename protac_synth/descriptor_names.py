@@ -152,7 +152,6 @@ DESCRIPTOR_NAMES: list[str] = [
     "fr_N_O",
     "fr_Ndealkylation1",
     "fr_Ndealkylation2",
-    "fr_Nhpyrrole",
     "fr_SH",
     "fr_aldehyde",
     "fr_alkyl_carbamate",
