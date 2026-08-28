@@ -13,6 +13,18 @@ cross_validation:
   seeds: [42, 123, 456, 789, 1011]
   n_folds: 5
 
+hpo:
+  # Inner-loop Optuna objective (MINIMISED):
+  #   objective = objective_alpha * RMSE + (1 - objective_alpha) * (1 - spearman_rho) / 2
+  # 1.0 = pure RMSE, 0.0 = pure ranking. Note the weights are nominal, not
+  # effective: on a [0, 1] target RMSE usually sits around 0.05-0.25 while the
+  # rank penalty spans the full [0, 1], so 0.5 still lets ranking dominate --
+  # raise it towards ~0.8 if calibration matters more than ordering.
+  objective_alpha: 0.5
+  # Cut applied to target AND predictions for the binary metrics reported per
+  # fold (ROC-AUC / PR-AUC rank on the raw predictions, not the thresholded ones).
+  classification_threshold: 0.7
+
 tracking:
   wandb_project: protac-synth
   study_prefix: v1

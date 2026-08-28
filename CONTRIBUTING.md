@@ -115,18 +115,18 @@ flowchart TD
 
     subgraph ONEFOLD["run_single_fold(seed, fold_idx)"]
         direction TB
-        S1["get_fold_indices()<br/>scaffold-grouped outer split"] --> S2["tune_inner_fold()<br/>Optuna TPE search,<br/>objective = R2 on inner-val"]
+        S1["get_fold_indices()<br/>scaffold-grouped outer split"] --> S2["tune_inner_fold()<br/>Optuna TPE search, MINIMISING<br/>alpha*RMSE + (1-alpha)*(1-rho)/2<br/>on inner-val"]
         S2 --> S3["Refit best params<br/>on full outer-train"]
-        S3 --> S4["Score refit model<br/>on outer-val -> R2"]
+        S3 --> S4["Score refit model on outer-val:<br/>regression metrics + binary<br/>metrics @ classification_threshold"]
         S4 --> S5["Persist score_seed(S)_fold(F).json,<br/>model_seed(S)_fold(F),<br/>trials_seed(S)_fold(F).csv,<br/>best_params_seed(S)_fold(F).json"]
     end
 
     LOOP --> ONEFOLD
     ONEFOLD -->|repeat for all 25 seed/fold pairs| AGG["--aggregate<br/>once all 25 score JSONs exist"]
-    AGG --> MEAN["mean +/- std R2<br/>over 25 outer-val scores"]
-    AGG --> PICK["pick hyperparams with best<br/>best_r2_inner (never outer)"]
+    AGG --> MEAN["mean +/- std of EVERY metric<br/>over 25 outer-val folds"]
+    AGG --> PICK["pick hyperparams with best<br/>best_objective_inner (never outer)"]
     PICK --> REFIT["Refit final model<br/>on the FULL dataset"]
-    REFIT --> OUT["outputs/models/model_prefix/<br/>model_prefix_final<br/>+ model_prefix_hparams.yaml"]
+    REFIT --> OUT["outputs/models/model_prefix/<br/>model_prefix_final<br/>+ model_prefix_hparams.yaml<br/>+ model_prefix_cv_metrics.csv"]
 ```
 
 #### Fold schematic — outer rotation
@@ -201,21 +201,64 @@ flowchart LR
     SPLIT --> IVAL["Inner-val (~20%)"]
     ITR --> OPT["Optuna study<br/>TPE sampler + MedianPruner<br/>n_trials trials"]
     IVAL --> OPT
-    OPT --> BEST["best_params<br/>+ best_r2_inner"]
+    OPT --> BEST["best_params<br/>+ best_objective_inner"]
     BEST --> REFIT2["Refit on full outer-train"]
     OV["Outer-val<br/>held-out scaffold group"] --> SCORE["Evaluate refit model"]
     REFIT2 --> SCORE
-    SCORE --> R2OUT["R2 -> score_seed(S)_fold(F).json"]
+    SCORE --> R2OUT["all metrics -> score_seed(S)_fold(F).json"]
 ```
 
 Once all 25 `score_seed{S}_fold{F}.json` files exist, `--aggregate`:
 
-1. reports mean ± std R² across the 25 outer-val scores;
-2. picks the hyperparameters with the best **inner** R² (never outer — avoids
-   leakage from picking on a test-like split);
+1. reports mean ± std across the 25 outer-val folds for **every** metric the
+   folds recorded (NaN-aware, so a fold with single-class labels only drops out
+   of ROC-AUC/PR-AUC);
+2. picks the hyperparameters with the best **inner** objective (never outer —
+   avoids leakage from picking on a test-like split);
 3. refits one final model on the **full** dataset with those hyperparameters;
-4. saves the final model plus a `_hparams.yaml` CV summary under
+4. saves the final model plus a `_hparams.yaml` CV summary and a
+   `_cv_metrics.csv` of the raw per-fold rows under
    `outputs/models/<model>_<prefix>/`.
+
+##### Metrics reported per fold
+
+Each fold's `score_*.json` is flat and holds (see `protac_synth/models/metrics.py`):
+
+* **regression** — `r2`, `rmse`, `mae`, `medae`, `max_error`,
+  `explained_variance`, `bias` (mean signed error), `pearson_r`,
+  `spearman_rho`, `kendall_tau`;
+* **binary, at `hpo.classification_threshold`** (default 0.7) — labels come from
+  `y_true >= threshold` and the label-based metrics from `y_pred >= threshold`,
+  while `clf_roc_auc` / `clf_pr_auc` rank on the *continuous* prediction:
+  `clf_roc_auc`, `clf_pr_auc`, `clf_mcc`, `clf_f1`, `clf_precision`,
+  `clf_recall`, `clf_specificity`, `clf_balanced_accuracy`, `clf_accuracy`,
+  `clf_cohen_kappa`, `clf_pos_rate` (PR-AUC's no-skill baseline),
+  `clf_pred_pos_rate` and the `clf_tp/fp/tn/fn` counts;
+* the fold's composite `objective` and the `objective_alpha` / `clf_threshold`
+  it was computed with.
+
+##### Inner-loop objective
+
+`tune_inner_fold` **minimises**
+
+```
+objective = objective_alpha * RMSE + (1 - objective_alpha) * (1 - spearman_rho) / 2
+```
+
+on the inner-val split (`hpo.objective_alpha` in `config/models_config.yaml`),
+so a model is rewarded for getting the *ordering* right as well as the
+magnitude. A collapsed model (constant predictions ⇒ undefined ρ) is scored as
+ρ = −1, the maximum rank penalty. `objective_alpha` must stay a run-level
+constant: Optuna trial values are only comparable under a fixed objective, so
+tuning α *inside* the study would just drive it to whichever end flatters each
+trial. The two components are stored as trial user attributes, so
+`trials_*.csv` shows the accuracy/ranking trade-off per trial.
+
+Note the study direction changed from `maximize` (inner-val R²) to `minimize`
+with this objective. Optuna's `load_if_exists` does not check direction, so
+`tune_inner_fold` verifies it explicitly and refuses a study DB left by an
+older run rather than mixing incomparable trial values — delete the stale
+`*_seed*_fold*.db` (and matching JSONs) and re-run those folds.
 
 #### Output layout
 
@@ -235,10 +278,10 @@ outputs/
 │   └── xgb_v1/                             # run_id = <model>_<prefix>
 │       ├── xgb_v1_seed42_fold0.db          # Optuna SQLite study (resumable snapshot)
 │       ├── trials_seed42_fold0.csv         # Optuna trials dataframe
-│       ├── best_params_seed42_fold0.json   # best inner-val hyperparameters + best_r2_inner
+│       ├── best_params_seed42_fold0.json   # best inner-val hyperparameters + best_objective_inner
 │       ├── model_seed42_fold0.skops        # refit fold model - sklearn wrapper
 │       ├── model_seed42_fold0.ubj          # refit fold model - XGBoost native (xgb only)
-│       └── score_seed42_fold0.json         # {"seed": 42, "fold_idx": 0, "r2": ...}
+│       └── score_seed42_fold0.json         # {"seed": 42, "fold_idx": 0, "r2": ..., + every other metric}
 └── models/                                 # empty until --aggregate
 ```
 
@@ -255,12 +298,13 @@ outputs/
 │       ├── trials_seed{0..4}_fold{0..4}.csv         # 25 trials dataframes
 │       ├── best_params_seed{0..4}_fold{0..4}.json   # 25 best-param files
 │       ├── model_seed{0..4}_fold{0..4}.{skops,ubj}  # 25 refit fold models
-│       └── score_seed{0..4}_fold{0..4}.json         # 25 outer-val R2 scores
+│       └── score_seed{0..4}_fold{0..4}.json         # 25 outer-val metric sets
 └── models/
     └── xgb_v1/
         ├── xgb_v1_final.skops    # final model, refit on the FULL dataset
         ├── xgb_v1_final.ubj      # (xgb only; mlp: .skops+.pt, gnn: single .ckpt)
-        └── xgb_v1_hparams.yaml   # chosen hyperparams + cv_mean_r2/cv_std_r2/best_inner_r2/n_folds
+        ├── xgb_v1_hparams.yaml   # chosen hyperparams + cv_mean_r2/cv_std_r2/best_inner_objective/n_folds + cv_metrics
+        └── xgb_v1_cv_metrics.csv # raw per-fold metric rows (one row per seed/fold)
 ```
 
 ## Tree route scoring 

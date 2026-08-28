@@ -26,6 +26,21 @@ from protac_synth.chem_utils import (
     compute_fingerprints,
     standardize_all,
 )
+from protac_synth.models.metrics import (
+    DEFAULT_CLF_THRESHOLD,
+    DEFAULT_OBJECTIVE_ALPHA,
+    compute_all_metrics,
+    hpo_objective,
+)
+
+# Keys written alongside the tuned hyperparameters in best_params_*.json that
+# are diagnostics, not hyperparameters: aggregate_results strips them before
+# replaying the params through a FixedTrial. "best_r2_inner" is the pre-composite
+# name, kept so older CV directories still aggregate.
+_NON_HPARAM_KEYS = (
+    "best_objective_inner", "best_r2_inner", "objective_alpha",
+    "inner_rmse", "inner_spearman_rho", "inner_rank_penalty",
+)
 
 
 def get_build_fn(model: str) -> Callable:
@@ -250,14 +265,21 @@ def tune_inner_fold(
     n_trials: int = 25,
     molecule_col: str = "molecule",
     build_kwargs: Optional[Dict] = None,
+    objective_alpha: float = DEFAULT_OBJECTIVE_ALPHA,
 ) -> Dict:
     """Run the inner Optuna loop for one outer fold and return the best params.
 
-    Each trial builds a model on the inner-train split and is scored (R2) on the
-    inner-val split. The study is backed by a node-local SQLite DB (reliable on
-    the compute node) with a whole-file snapshot copied to /proj after every
-    trial, so a preempted job resumes instead of restarting. Also writes the
-    trials dataframe and best_params JSON under cv_dir/prefix.
+    Each trial builds a model on the inner-train split and is scored on the
+    inner-val split by the composite objective of
+    `protac_synth.models.metrics.hpo_objective` — a blend of RMSE and a
+    Spearman rank penalty, **minimised** (the study direction is "minimize";
+    an inner-val R2, which was the objective before, is maximised, so a study
+    DB from an earlier run is rejected rather than silently mixed in).
+
+    The study is backed by a node-local SQLite DB (reliable on the compute node)
+    with a whole-file snapshot copied to /proj after every trial, so a preempted
+    job resumes instead of restarting. Also writes the trials dataframe and
+    best_params JSON under cv_dir/prefix.
 
     Args:
         build_fn: Model factory from get_build_fn; called once per trial.
@@ -277,9 +299,15 @@ def tune_inner_fold(
         build_kwargs: Model-specific config forwarded to build_fn (e.g. fp_size,
             use_fingerprints, use_descriptors for tabular models; max_epochs,
             patience, chemeleon_weights for the GNN).
+        objective_alpha: Weight on RMSE vs the rank penalty in the composite
+            objective; a run-level constant, never an Optuna-tuned value.
 
     Returns:
         The best hyperparameters (Optuna study.best_params dict).
+
+    Raises:
+        RuntimeError: If a persisted study from a run with a different
+            optimisation direction is found (delete it and re-tune).
     """
     build_kwargs = build_kwargs or {}
     smiles_itr = df_train.iloc[inner_train_idx][molecule_col].tolist()
@@ -299,7 +327,13 @@ def tune_inner_fold(
             X_fp_val=X_fp_ival, X_desc_val=X_desc_ival,
             **build_kwargs,
         )
-        return float(m.score(smiles_ival, y_ival, X_fp=X_fp_ival, X_desc=X_desc_ival))
+        y_pred = m.predict(smiles_ival, X_fp_ival, X_desc_ival)
+        parts = hpo_objective(y_ival, y_pred, alpha=objective_alpha)
+        # keep the two components on the trial so the accuracy/ranking trade-off
+        # is inspectable in trials_*.csv without re-running anything
+        for key, value in parts.items():
+            trial.set_user_attr(key, value)
+        return parts["objective"]
 
     # Optuna writes to a node-local SQLite DB (unreliable over the network
     # filesystem); persist_db is the durable copy under cv_dir used to resume.
@@ -315,12 +349,23 @@ def tune_inner_fold(
 
     study = optuna.create_study(
         study_name=f"{prefix}_{seed}_fold{fold_idx}",
-        direction="maximize",
+        direction="minimize",
         storage=f"sqlite:///{local_db}",
         load_if_exists=True,
         sampler=optuna.samplers.TPESampler(seed=seed * 1000 + fold_idx),
         pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=3),
     )
+    # load_if_exists reuses a stored study without checking its direction, so a
+    # DB left by the old maximise-R2 objective would come back with its trials
+    # scored on an incomparable scale (and study.best_value picking the WORST
+    # composite). Refuse it instead.
+    if study.direction is not optuna.study.StudyDirection.MINIMIZE:
+        raise RuntimeError(
+            f"Existing study '{study.study_name}' in {persist_db} optimises "
+            f"{study.direction.name}, but the composite objective is minimised. "
+            "It predates the RMSE+Spearman objective; delete that .db (and the "
+            "matching best_params/score JSONs) and re-run the fold."
+        )
 
     def _snapshot(study, trial):
         shutil.copy(local_db, persist_db)     # whole-file copy -> reliable on VAST
@@ -329,8 +374,20 @@ def tune_inner_fold(
 
     study.trials_dataframe().to_csv(
         out_dir / f"trials_seed{seed}_fold{fold_idx}.csv", index=False)
+    best_attrs = study.best_trial.user_attrs
     with open(out_dir / f"best_params_seed{seed}_fold{fold_idx}.json", "w") as f:
-        json.dump({**study.best_params, "best_r2_inner": study.best_value}, f, indent=2)
+        json.dump({
+            **study.best_params,
+            "best_objective_inner": study.best_value,
+            "objective_alpha":      objective_alpha,
+            "inner_rmse":           best_attrs.get("rmse"),
+            "inner_spearman_rho":   best_attrs.get("spearman_rho"),
+            "inner_rank_penalty":   best_attrs.get("rank_penalty"),
+        }, f, indent=2)
+    print(f"[{prefix}] seed {seed} fold {fold_idx} inner best | objective = "
+          f"{study.best_value:.4f} (alpha={objective_alpha}) | "
+          f"RMSE = {best_attrs.get('rmse', float('nan')):.4f} | "
+          f"rho = {best_attrs.get('spearman_rho', float('nan')):.4f}")
 
     return study.best_params
 
@@ -351,10 +408,20 @@ def run_single_fold(
     save_fold_model: bool = True,
     molecule_col: str = "molecule",
     build_kwargs: Optional[Dict] = None,
+    objective_alpha: float = DEFAULT_OBJECTIVE_ALPHA,
+    clf_threshold: float = DEFAULT_CLF_THRESHOLD,
 ) -> float:
     """Evaluate one outer fold end-to-end: tune on the inner split, refit on the
-    full fold-train with the best params, score (R2) on the held-out fold-val,
-    and persist the result to score_seed{seed}_fold{fold_idx}.json.
+    full fold-train with the best params, score the held-out fold-val, and
+    persist the result to score_seed{seed}_fold{fold_idx}.json.
+
+    The fold-val predictions are scored with the full metric set of
+    `protac_synth.models.metrics.compute_all_metrics`: the regression metrics
+    (R2/RMSE/MAE/... plus Pearson/Spearman/Kendall) and the binary metrics that
+    come from thresholding target and prediction at `clf_threshold`
+    (ROC-AUC/PR-AUC/MCC/F1/...). All of them land flat in the score JSON, whose
+    "r2" key is kept so existing readers (scripts/models/evaluation.py,
+    aggregate_results) are unaffected.
 
     Idempotent: if that score JSON already exists the fold is skipped and its
     cached R2 returned, so re-running a partially-finished sweep is safe.
@@ -379,6 +446,10 @@ def run_single_fold(
         build_kwargs: Model-specific config forwarded to build_fn (e.g. fp_size,
             use_fingerprints, use_descriptors for tabular models; max_epochs,
             patience, chemeleon_weights for the GNN).
+        objective_alpha: Weight on RMSE vs the rank penalty in the inner-loop
+            composite objective, forwarded to tune_inner_fold.
+        clf_threshold: Cut on the target scale used to also report this fold as
+            a binary problem (default 0.7).
 
     Returns:
         The outer-val R2 (float) for this fold.
@@ -400,6 +471,7 @@ def run_single_fold(
         inner_train_idx, inner_val_idx,
         seed, fold_idx, prefix, cv_dir, target, fp_radius, n_trials,
         molecule_col=molecule_col, build_kwargs=build_kwargs,
+        objective_alpha=objective_alpha,
     )
 
     smiles_tr = df_train.iloc[fold_train_idx][molecule_col].tolist()
@@ -421,7 +493,12 @@ def run_single_fold(
         X_fp_val=X_fp_val, X_desc_val=X_desc_val,
         **build_kwargs,
     )
-    score = float(m.score(smiles_val, y_val, X_fp=X_fp_val, X_desc=X_desc_val))
+    # predict once, then derive every reported metric from the same predictions
+    y_pred = m.predict(smiles_val, X_fp_val, X_desc_val)
+    metrics = compute_all_metrics(y_val, y_pred, threshold=clf_threshold)
+    metrics["objective"] = hpo_objective(y_val, y_pred, alpha=objective_alpha)["objective"]
+    metrics["objective_alpha"] = float(objective_alpha)
+    score = float(metrics["r2"])
 
     # persist the refit fold model unless the caller opted out (on by default)
     if save_fold_model:
@@ -430,10 +507,47 @@ def run_single_fold(
 
     score_path.parent.mkdir(parents=True, exist_ok=True)
     with open(score_path, "w") as f:
-        json.dump({"seed": seed, "fold_idx": fold_idx, "r2": score}, f, indent=2)
+        # flat, "r2" first: readers that only want R2 keep working unchanged
+        json.dump({"seed": seed, "fold_idx": fold_idx, **metrics}, f, indent=2)
 
-    print(f"[{prefix}] seed {seed} fold {fold_idx} | R2 = {score:.3f}")
+    print(f"[{prefix}] seed {seed} fold {fold_idx} | "
+          f"R2 = {metrics['r2']:.3f} | RMSE = {metrics['rmse']:.3f} | "
+          f"MAE = {metrics['mae']:.3f} | rho = {metrics['spearman_rho']:.3f}")
+    print(f"[{prefix}] seed {seed} fold {fold_idx} | @{clf_threshold:g} "
+          f"ROC-AUC = {metrics['clf_roc_auc']:.3f} | PR-AUC = {metrics['clf_pr_auc']:.3f} "
+          f"(baseline {metrics['clf_pos_rate']:.3f}) | MCC = {metrics['clf_mcc']:.3f} | "
+          f"F1 = {metrics['clf_f1']:.3f} | BA = {metrics['clf_balanced_accuracy']:.3f}")
     return score
+
+
+def _summarize_folds(fold_rows: List[Dict]) -> Dict[str, Dict[str, float]]:
+    """Mean/std/n per metric across the outer folds.
+
+    Non-numeric entries and the bookkeeping columns are skipped, and NaNs are
+    ignored per metric (a fold whose val labels are single-class reports NaN
+    ROC-AUC/PR-AUC, and that shouldn't wipe out the other folds' numbers), with
+    `n` recording how many folds actually contributed.
+
+    Args:
+        fold_rows: The parsed score_seed*_fold*.json dicts.
+
+    Returns:
+        Mapping metric name -> {"mean", "std", "n"}, in the order the metrics
+        appear in the fold JSONs.
+    """
+    skip = {"seed", "fold_idx", "clf_threshold", "objective_alpha"}
+    names = [k for k in dict.fromkeys(k for row in fold_rows for k in row)
+             if k not in skip]
+    summary = {}
+    for name in names:
+        values = np.array([row.get(name, np.nan) for row in fold_rows], dtype=float)
+        finite = values[np.isfinite(values)]
+        if finite.size == 0:
+            continue
+        summary[name] = {"mean": float(finite.mean()),
+                         "std": float(finite.std()),
+                         "n": int(finite.size)}
+    return summary
 
 
 def aggregate_results(
@@ -451,12 +565,14 @@ def aggregate_results(
     molecule_col: str = "molecule",
     build_kwargs: Optional[Dict] = None,
 ) -> Tuple[float, List[float]]:
-    """Collect all cv_seeds x n_folds outer-fold JSONs, report mean +/- std R2,
-    and retrain the final model on the full dataset.
+    """Collect all cv_seeds x n_folds outer-fold JSONs, report mean +/- std for
+    every metric the folds recorded, and retrain the final model on the full
+    dataset.
 
-    The final hyperparameters are the ones with the best inner-val R2 across
-    folds (chosen by inner, never outer, score to avoid leakage). Saves the
-    fitted model and a *_hparams.yaml CV summary under models_dir/prefix.
+    The final hyperparameters are the ones with the best inner-val objective
+    across folds (chosen by inner, never outer, score to avoid leakage). Saves
+    the fitted model, a *_hparams.yaml CV summary (including the aggregated
+    metrics) and a *_cv_metrics.csv of the raw per-fold rows under models_dir/prefix.
 
     Args:
         build_fn: Model factory from get_build_fn.
@@ -482,16 +598,16 @@ def aggregate_results(
         RuntimeError: If any of the cv_seeds x n_folds score JSONs is missing.
     """
     build_kwargs = build_kwargs or {}
-    # load every fold's outer-val score + inner-tuned best params, and note
+    # load every fold's outer-val metrics + inner-tuned best params, and note
     # which (seed, fold_idx) pairs haven't been run yet
-    scores, best_params_all, missing = [], [], []
+    fold_rows, best_params_all, missing = [], [], []
     for seed in cv_seeds:
         for fold_idx in range(n_folds):
             sp = cv_dir / prefix / f"score_seed{seed}_fold{fold_idx}.json"
             pp = cv_dir / prefix / f"best_params_seed{seed}_fold{fold_idx}.json"
             if sp.exists():
                 with open(sp) as f:
-                    scores.append(json.load(f)["r2"])
+                    fold_rows.append(json.load(f))
             else:
                 missing.append(f"seed{seed}_fold{fold_idx}")
             if pp.exists():
@@ -501,14 +617,31 @@ def aggregate_results(
     if missing:
         raise RuntimeError(f"Missing fold results, cannot aggregate: {missing}")
 
-    mean_score, std_score = float(np.mean(scores)), float(np.std(scores))
-    print(f"[{prefix}] mean R2 = {mean_score:.3f} +/- {std_score:.3f} (n={len(scores)})")
+    scores = [row["r2"] for row in fold_rows]
+    # mean +/- std for every numeric metric the folds recorded; nan-aware since
+    # e.g. ROC-AUC is undefined on a fold whose labels are single-class
+    cv_metrics = _summarize_folds(fold_rows)
+    mean_score, std_score = cv_metrics["r2"]["mean"], cv_metrics["r2"]["std"]
+    print(f"[{prefix}] CV summary over n={len(fold_rows)} folds")
+    for name, stat in cv_metrics.items():
+        note = "" if stat["n"] == len(fold_rows) else f"   (n={stat['n']})"
+        print(f"    {name:<22} {stat['mean']:+.4f} +/- {stat['std']:.4f}{note}")
 
-    # overall-best params chosen by inner score (not outer -> no leak)
-    best_entry = max(best_params_all, key=lambda d: d.get("best_r2_inner", -np.inf))
-    best_inner = best_entry.get("best_r2_inner")
+    # overall-best params chosen by inner score (not outer -> no leak). The
+    # composite objective is minimised; fall back to the older maximise-R2 key
+    # so a CV directory from before the objective change still aggregates.
+    if any("best_objective_inner" in d for d in best_params_all):
+        best_entry = min(best_params_all,
+                         key=lambda d: d.get("best_objective_inner", np.inf))
+        best_inner = best_entry.get("best_objective_inner")
+        best_inner_key = "best_inner_objective"
+    else:
+        best_entry = max(best_params_all, key=lambda d: d.get("best_r2_inner", -np.inf))
+        best_inner = best_entry.get("best_r2_inner")
+        best_inner_key = "best_inner_r2"
     best_fp_radius = best_entry.pop("fp_radius", fp_radius)
-    best_entry.pop("best_r2_inner", None)                 # best_entry now = the hyperparameters
+    for key in _NON_HPARAM_KEYS:                          # strip the diagnostics ...
+        best_entry.pop(key, None)                         # ... best_entry is now the hyperparameters
 
     final_model = build_fn(
         FixedTrial(best_entry), best_fp_radius,
@@ -527,11 +660,19 @@ def aggregate_results(
         "fp_radius":       best_fp_radius,
         "cv_mean_r2":      round(mean_score, 4),
         "cv_std_r2":       round(std_score, 4),
-        "best_inner_r2":   round(best_inner, 4) if best_inner is not None else None,
+        best_inner_key:    round(best_inner, 4) if best_inner is not None else None,
         "n_folds":         len(scores),
+        "cv_metrics":      {name: {k: (round(v, 4) if isinstance(v, float) else v)
+                                   for k, v in stat.items()}
+                            for name, stat in cv_metrics.items()},
     }
     with open(model_path.parent / f"{prefix}_hparams.yaml", "w") as f:
         yaml.safe_dump(hparams_out, f, default_flow_style=False, sort_keys=False)
     print(f"[{prefix}] hyperparameters saved to {model_path.parent / f'{prefix}_hparams.yaml'}")
+
+    # raw per-fold metrics, one row per (seed, fold), for plotting/stats downstream
+    metrics_csv = model_path.parent / f"{prefix}_cv_metrics.csv"
+    pd.DataFrame(fold_rows).to_csv(metrics_csv, index=False)
+    print(f"[{prefix}] per-fold metrics saved to {metrics_csv}")
 
     return mean_score, scores

@@ -180,7 +180,9 @@ def main() -> None:
         run_single_fold(build_fn, df_train, X_fp, X_desc, args.seed, args.fold, run_id,
                         cv_dir, target, fp_radius, n_folds, args.n_trials,
                         save_fold_model=args.save_fold_models,
-                        molecule_col=molecule_col, build_kwargs=build_kwargs)
+                        molecule_col=molecule_col, build_kwargs=build_kwargs,
+                        objective_alpha=cfg.hpo.objective_alpha,
+                        clf_threshold=cfg.hpo.classification_threshold)
 
 
 if __name__ == "__main__":
