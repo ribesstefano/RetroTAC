@@ -86,9 +86,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["protac_synth*"]
 
-[tool.setuptools.package-data]
-protac_synth = ["descriptor_names.txt"]
-
 [tool.uv]
 # Install the project itself (editable) so `protac_synth` imports from anywhere,
 # not just the repo root.
