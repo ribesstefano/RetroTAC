@@ -444,7 +444,7 @@ def make_preprocessor(
     return SkPipeline([("desc", desc_pipeline)])
 
 
-def get_scaffold(smiles: str, generic: bool = True) -> str:
+def get_scaffold(smiles: str, generic: bool = False) -> str:
     """Compute the Murcko scaffold for a SMILES string.
 
     Args:
