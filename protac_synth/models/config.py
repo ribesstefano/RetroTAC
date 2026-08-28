@@ -18,6 +18,8 @@ from typing import List, Union
 
 import yaml
 
+from protac_synth.models.metrics import DEFAULT_CLF_THRESHOLD, DEFAULT_OBJECTIVE_ALPHA
+
 
 @dataclass(frozen=True)
 class FeaturesConfig:
@@ -46,6 +48,19 @@ class GNNConfig:
 
 
 @dataclass(frozen=True)
+class HPOConfig:
+    """Inner-loop tuning + reporting knobs (YAML section `hpo`, all optional).
+
+    `objective_alpha` weights RMSE against the Spearman rank penalty in the
+    composite Optuna objective (see protac_synth.models.metrics.hpo_objective);
+    `classification_threshold` is the cut used to also report the folds as a
+    binary problem.
+    """
+    objective_alpha: float = DEFAULT_OBJECTIVE_ALPHA
+    classification_threshold: float = DEFAULT_CLF_THRESHOLD
+
+
+@dataclass(frozen=True)
 class ModelsConfig:
     """Everything scripts/models/train.py / scripts/analysis/models_evaluation.py
     read out of config/models_config.yaml."""
@@ -55,6 +70,7 @@ class ModelsConfig:
     cross_validation: CrossValidationConfig
     torch: TorchConfig
     gnn: GNNConfig
+    hpo: HPOConfig = HPOConfig()
 
     @classmethod
     def load(cls, path: Union[str, Path]) -> "ModelsConfig":
@@ -76,6 +92,7 @@ class ModelsConfig:
         cv = raw["cross_validation"]
         torch_cfg = raw["torch"]
         gnn_cfg = raw.get("gnn", {})
+        hpo_cfg = raw.get("hpo", {})
 
         return cls(
             target=raw["target"],
@@ -97,5 +114,10 @@ class ModelsConfig:
             ),
             gnn=GNNConfig(
                 chemeleon_weights=gnn_cfg.get("chemeleon_weights", "chemeleon_mp.pt"),
+            ),
+            hpo=HPOConfig(
+                objective_alpha=float(hpo_cfg.get("objective_alpha", DEFAULT_OBJECTIVE_ALPHA)),
+                classification_threshold=float(
+                    hpo_cfg.get("classification_threshold", DEFAULT_CLF_THRESHOLD)),
             ),
         )

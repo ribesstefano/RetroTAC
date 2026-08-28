@@ -28,11 +28,13 @@ set -euo pipefail
 cd $SLURM_SUBMIT_DIR
 
 MODEL=mlp
-INPUT=data/protac_synth_data.csv
-CONFIG=config/models_config.yaml
-OUTPUT_ROOT=outputs/
-PREFIX=v1
-N_TRIALS=20
+INPUT=${INPUT:-data/sets/routes_train_val.csv}
+CONFIG=${CONFIG:-config/models_config_routes.yaml}
+OUTPUT_ROOT=${OUTPUT_ROOT:-outputs/}
+PREFIX=${PREFIX:-routes}
+N_TRIALS=${N_TRIALS:-25}
+CACHE_DIR=${CACHE_DIR:-outputs/feature_cache_routes}
+DEVICE=${DEVICE:-cuda}   # torch.device("gpu") is invalid; xgboost/lightning both take cuda
 
 # Seeds MUST match cross_validation.seeds in $CONFIG; folds are 0..N_FOLDS-1.
 SEEDS=(42 123 456 789 1011)
@@ -42,13 +44,17 @@ FOLD=$((SLURM_ARRAY_TASK_ID % N_FOLDS))
 
 echo "task ${SLURM_ARRAY_TASK_ID}: model=${MODEL} seed=${SEED} fold=${FOLD}"
 
-uv run scripts/models/train.py \
+apptainer exec --nv $(bash apptainer/bind_live_repo.sh) \
+    apptainer/training.sif \
+    python scripts/models/train.py \
     --model "$MODEL" \
     --input "$INPUT" \
     --config "$CONFIG" \
     --output-root "$OUTPUT_ROOT" \
+    --cache-dir "$CACHE_DIR" \
     --prefix "$PREFIX" \
     --n_trials "$N_TRIALS" \
     --seed "$SEED" \
     --fold "$FOLD" \
-    --device gpu
+    --device "$DEVICE" \
+    --scaffold-col wh_smiles
