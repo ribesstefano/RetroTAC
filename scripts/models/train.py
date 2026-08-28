@@ -65,6 +65,9 @@ def parse_args() -> argparse.Namespace:
                     help="run label; namespaces the CV and model output dirs (default: default)")
     ap.add_argument("--device", default="cpu",
                     help="compute device forwarded to the model (e.g. cpu, cuda); default: cpu")
+    ap.add_argument("--scaffold-col", default=None,
+                    help="SMILES column to compute scaffolds from (single-fold mode only); "
+                         "defaults to the config's molecule_col")
 
     # ── run-mode selectors ──────────────────────────────────────────────────
     ap.add_argument("--seed", type=int,
@@ -122,6 +125,10 @@ def main() -> None:
     args.cache_dir.mkdir(parents=True, exist_ok=True)
 
     df_train = pd.read_csv(args.input)
+    # fixed row order so get_fold_indices' scaffold partition (order of first
+    # appearance -> shuffle) is reproducible across separately-launched fold
+    # jobs regardless of how the input CSV happens to be sorted
+    df_train = df_train.sort_values(molecule_col, kind="stable").reset_index(drop=True)
 
     # precompute: model-agnostic feature caching -> do it and exit
     if args.precompute:
@@ -168,7 +175,8 @@ def main() -> None:
     else:
         if args.seed is None or args.fold is None:
             raise SystemExit("single-fold mode requires --seed and --fold (or use --aggregate)")
-        df_train["scaffolds"] = df_train[molecule_col].apply(get_scaffold)
+        scaffold_col = args.scaffold_col or molecule_col
+        df_train["scaffolds"] = df_train[scaffold_col].apply(get_scaffold)
         run_single_fold(build_fn, df_train, X_fp, X_desc, args.seed, args.fold, run_id,
                         cv_dir, target, fp_radius, n_folds, args.n_trials,
                         save_fold_model=args.save_fold_models,

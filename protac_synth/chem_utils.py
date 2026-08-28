@@ -13,7 +13,6 @@ import hashlib
 import logging
 import re
 from collections import defaultdict
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -30,6 +29,8 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline as SkPipeline
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
+
+from protac_synth.descriptor_names import DESCRIPTOR_NAMES
 
 RDLogger.DisableLog("rdApp.*")
 
@@ -303,8 +304,6 @@ def make_hash_ids(series: pd.Series, prefix: str) -> pd.Series:
 # ── Surrogate-model feature computation ────────────────────────────────────────
 
 # Shared across compute_descriptors' default calculator/n_desc args below.
-with open(Path(__file__).parent / "descriptor_names.txt", "r") as f:
-    DESCRIPTOR_NAMES = [line.strip() for line in f if line.strip()]
 DESCRIPTOR_CALCULATOR = MoleculeDescriptors.MolecularDescriptorCalculator(
     DESCRIPTOR_NAMES
 )
@@ -445,7 +444,7 @@ def make_preprocessor(
     return SkPipeline([("desc", desc_pipeline)])
 
 
-def get_scaffold(smiles: str, generic: bool = False) -> str:
+def get_scaffold(smiles: str, generic: bool = True) -> str:
     """Compute the Murcko scaffold for a SMILES string.
 
     Args:

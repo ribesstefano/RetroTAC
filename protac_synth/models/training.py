@@ -28,7 +28,6 @@ from protac_synth.chem_utils import (
 )
 
 
-# ── Model dispatch (lazy import so a run pulls in only its backend) ──────────
 def get_build_fn(model: str) -> Callable:
     """Return the model's `build_*` factory, importing only that backend.
 
@@ -56,7 +55,6 @@ def get_build_fn(model: str) -> Callable:
     raise ValueError(f"Invalid model name: {model}")
 
 
-# ── Feature caching ─────────────────────────────────────────────────────────
 def _load_or_compute(path: Path, compute_fn: Callable[[], np.ndarray], n_expected: int) -> np.ndarray:
     """Load a cached .npz if present (and row-count matches), else compute + save.
 
@@ -73,7 +71,7 @@ def _load_or_compute(path: Path, compute_fn: Callable[[], np.ndarray], n_expecte
     """
     if path.exists():
         with np.load(path) as data:
-            arr = data["arr_0"]               # savez_compressed stores the array under the auto key arr_0
+            arr = data["arr_0"] # savez_compressed stores the array under the auto key arr_0
         if arr.shape[0] != n_expected:
             raise ValueError(
                 f"Cached {path.name} has {arr.shape[0]} rows but the dataset has "
@@ -165,7 +163,6 @@ def prepare_inputs(
                           use_fingerprints, use_descriptors, molecule_col)
 
 
-# ── Scaffold-grouped fold indices ───────────────────────────────────────────
 def get_fold_indices(
     df_train: pd.DataFrame,
     seed: int,
@@ -182,7 +179,8 @@ def get_fold_indices(
 
     Args:
         df_train: DataFrame with a "scaffolds" column (one scaffold per row).
-        seed: Seed for the outer scaffold shuffle (inner uses seed+fold_idx+1000).
+        seed: Seed for the outer scaffold shuffle (inner uses seed*1000+fold_idx,
+            distinct from the outer seed as long as fold_idx < 1000).
         fold_idx: Which fold (0..n_folds-1) serves as the outer-val set.
         n_folds: Number of outer folds.
         inner_val_frac: Fraction of the outer-train rows held out for inner-val.
@@ -191,6 +189,7 @@ def get_fold_indices(
         Tuple (fold_train_idx, fold_val_idx, inner_train_idx, inner_val_idx) of
         integer position arrays.
     """
+    # bucket row positions by scaffold so a whole scaffold moves as one unit
     scaffold_to_indices = defaultdict(list)
     for pos, scaffold in enumerate(df_train["scaffolds"]):
         scaffold_to_indices[scaffold].append(pos)
@@ -199,6 +198,8 @@ def get_fold_indices(
     scaffolds = list(scaffold_to_indices.keys())
     rng.shuffle(scaffolds)
 
+    # greedily drop each scaffold into whichever fold is currently smallest,
+    # which balances fold sizes without ever splitting a scaffold across folds
     folds = [[] for _ in range(n_folds)]
     for scaffold in scaffolds:
         target = min(range(n_folds), key=lambda f: len(folds[f]))
@@ -208,14 +209,19 @@ def get_fold_indices(
     fold_train_idx = np.array([i for f in range(n_folds) if f != fold_idx
                                  for i in folds[f]], dtype=int)
 
+    # re-bucket just the outer-train rows for the inner train/val split below
     inner_scaffold_to_indices = defaultdict(list)
     for pos in fold_train_idx:
         inner_scaffold_to_indices[df_train["scaffolds"].iloc[pos]].append(pos)
 
-    inner_rng = np.random.default_rng(seed + fold_idx + 1000)
+    # independent seed from the outer shuffle, so inner splits don't mirror it;
+    # multiplicative (not +fold_idx+1000) so distinct (seed, fold_idx) pairs
+    # never collide onto the same inner seed
+    inner_rng = np.random.default_rng(seed * 1000 + fold_idx)
     inner_scaffolds = list(inner_scaffold_to_indices.keys())
     inner_rng.shuffle(inner_scaffolds)
 
+    # greedily add whole scaffolds to inner-val until the ~20% quota is filled
     n_inner_val = int(np.floor(inner_val_frac * len(fold_train_idx)))
     inner_val_set = set()
     for scaffold in inner_scaffolds:
@@ -228,7 +234,6 @@ def get_fold_indices(
     return fold_train_idx, fold_val_idx, inner_train_idx, inner_val_idx
 
 
-# ── Inner Optuna tuning ─────────────────────────────────────────────────────
 def tune_inner_fold(
     build_fn: Callable,
     df_train: pd.DataFrame,
@@ -296,7 +301,8 @@ def tune_inner_fold(
         )
         return float(m.score(smiles_ival, y_ival, X_fp=X_fp_ival, X_desc=X_desc_ival))
 
-    # ── node-local DB (reliable SQLite) + durable /proj snapshot (resume) ───
+    # Optuna writes to a node-local SQLite DB (unreliable over the network
+    # filesystem); persist_db is the durable copy under cv_dir used to resume.
     tmp_dir = os.environ.get("TMPDIR", "/tmp")
     local_db = f"{tmp_dir}/{prefix}_seed{seed}_fold{fold_idx}.db"
     out_dir = cv_dir / prefix
@@ -304,6 +310,7 @@ def tune_inner_fold(
     persist_db = out_dir / f"{prefix}_seed{seed}_fold{fold_idx}.db"
 
     if persist_db.exists():
+        # resume: seed the local DB from a prior run's persisted snapshot
         shutil.copy(persist_db, local_db)
 
     study = optuna.create_study(
@@ -311,7 +318,7 @@ def tune_inner_fold(
         direction="maximize",
         storage=f"sqlite:///{local_db}",
         load_if_exists=True,
-        sampler=optuna.samplers.TPESampler(seed=seed + fold_idx),
+        sampler=optuna.samplers.TPESampler(seed=seed * 1000 + fold_idx),
         pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=3),
     )
 
@@ -328,7 +335,6 @@ def tune_inner_fold(
     return study.best_params
 
 
-# ── One outer fold: tune -> refit -> score -> save ──────────────────────────
 def run_single_fold(
     build_fn: Callable,
     df_train: pd.DataFrame,
@@ -377,6 +383,8 @@ def run_single_fold(
     Returns:
         The outer-val R2 (float) for this fold.
     """
+    # idempotent: a completed prior run leaves this file, so re-running a
+    # partially-finished sweep just skips folds that already have a score
     score_path = cv_dir / prefix / f"score_seed{seed}_fold{fold_idx}.json"
     if score_path.exists():
         print(f"[{prefix}] seed {seed} fold {fold_idx} already done, skipping")
@@ -403,6 +411,7 @@ def run_single_fold(
     X_desc_tr = X_desc[fold_train_idx] if X_desc is not None else None
     X_desc_val = X_desc[fold_val_idx] if X_desc is not None else None
 
+    # Optuna may have tuned fp_radius itself; fall back to the CLI default if not
     fold_fp_radius = best_params.pop("fp_radius", fp_radius)
     fixed_trial = FixedTrial(best_params)
     m = build_fn(
@@ -414,7 +423,7 @@ def run_single_fold(
     )
     score = float(m.score(smiles_val, y_val, X_fp=X_fp_val, X_desc=X_desc_val))
 
-    # persist the refit fold model unless disabled (on by default)
+    # persist the refit fold model unless the caller opted out (on by default)
     if save_fold_model:
         fold_model_path = cv_dir / prefix / f"model_seed{seed}_fold{fold_idx}"
         m.save(str(fold_model_path))
@@ -427,7 +436,6 @@ def run_single_fold(
     return score
 
 
-# ── Aggregate the folds -> mean/std + final model ───────────────────────────
 def aggregate_results(
     build_fn: Callable,
     df_train: pd.DataFrame,
@@ -474,6 +482,8 @@ def aggregate_results(
         RuntimeError: If any of the cv_seeds x n_folds score JSONs is missing.
     """
     build_kwargs = build_kwargs or {}
+    # load every fold's outer-val score + inner-tuned best params, and note
+    # which (seed, fold_idx) pairs haven't been run yet
     scores, best_params_all, missing = [], [], []
     for seed in cv_seeds:
         for fold_idx in range(n_folds):

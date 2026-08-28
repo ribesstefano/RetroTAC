@@ -217,6 +217,52 @@ Once all 25 `score_seed{S}_fold{F}.json` files exist, `--aggregate`:
 4. saves the final model plus a `_hparams.yaml` CV summary under
    `outputs/models/<model>_<prefix>/`.
 
+#### Output layout
+
+Example for `--model xgb --prefix v1 --output-root outputs` (`outputs/` is
+gitignored). File extensions on `model_seed*_fold*` / `<run_id>_final` depend on
+the backend: xgb saves `.skops` + `.ubj`, mlp saves `.skops` + `.pt`, gnn saves a
+single `.ckpt`. Per-fold models are omitted entirely with `--no-save-fold-models`.
+
+**After one fold** (`--seed 42 --fold 0`, feature cache from a prior `--precompute`):
+
+```
+outputs/
+├── feature_cache/                          # model-agnostic, built once via --precompute
+│   ├── fp_r3_512.npz                       # cached Morgan fingerprints (named by fp_radius/fp_size)
+│   └── desc.npz                            # cached RDKit descriptors
+├── cv/
+│   └── xgb_v1/                             # run_id = <model>_<prefix>
+│       ├── xgb_v1_seed42_fold0.db          # Optuna SQLite study (resumable snapshot)
+│       ├── trials_seed42_fold0.csv         # Optuna trials dataframe
+│       ├── best_params_seed42_fold0.json   # best inner-val hyperparameters + best_r2_inner
+│       ├── model_seed42_fold0.skops        # refit fold model - sklearn wrapper
+│       ├── model_seed42_fold0.ubj          # refit fold model - XGBoost native (xgb only)
+│       └── score_seed42_fold0.json         # {"seed": 42, "fold_idx": 0, "r2": ...}
+└── models/                                 # empty until --aggregate
+```
+
+**After all 25 folds + `--aggregate`:**
+
+```
+outputs/
+├── feature_cache/
+│   ├── fp_r3_512.npz
+│   └── desc.npz
+├── cv/
+│   └── xgb_v1/
+│       ├── xgb_v1_seed{0..4}_fold{0..4}.db          # 25 Optuna studies
+│       ├── trials_seed{0..4}_fold{0..4}.csv         # 25 trials dataframes
+│       ├── best_params_seed{0..4}_fold{0..4}.json   # 25 best-param files
+│       ├── model_seed{0..4}_fold{0..4}.{skops,ubj}  # 25 refit fold models
+│       └── score_seed{0..4}_fold{0..4}.json         # 25 outer-val R2 scores
+└── models/
+    └── xgb_v1/
+        ├── xgb_v1_final.skops    # final model, refit on the FULL dataset
+        ├── xgb_v1_final.ubj      # (xgb only; mlp: .skops+.pt, gnn: single .ckpt)
+        └── xgb_v1_hparams.yaml   # chosen hyperparams + cv_mean_r2/cv_std_r2/best_inner_r2/n_folds
+```
+
 ## Tree route scoring 
 Tree routes' scores can be computed as follows:
 ```bash
