@@ -12,6 +12,7 @@ Usage:
     python plotting.py --results data/outputs/results/comparison
 """
 import argparse
+import json
 import pickle
 import warnings
 from pathlib import Path
@@ -310,6 +311,83 @@ def plot_test_scatter(
     save_fig(fig, f"{prefix}test_scatter")
 
 
+# ── Fig 4: ensemble strategies (best_single / uniform / best_n / Caruana) ───
+def _pretty_strategy(name: str) -> str:
+    """Display label for a strategy key, e.g. 'best_5' -> 'Best-5', 'best_single' -> 'Best Single'."""
+    tail = name.split("_")[-1]
+    if name.startswith("best_") and tail.isdigit():
+        return f"Best-{tail}"
+    return name.replace("_", " ").title()
+
+
+def plot_ensemble_strategies(results_dir: Path, prefix: str = "") -> None:
+    """Save a 3-panel figure comparing ensemble strategies: RMSE, R², and backend composition.
+
+    Reads the artifacts evaluation.py's `--ensemble` writes: `ensemble_strategies.csv`
+    (one row per strategy, from `compute_all_metrics` plus `n_models`) and
+    `ensemble_weights_{strategy}.json` (per-model weights, for the composition
+    panel -- which backend's fold models each strategy actually selected).
+
+    Args:
+        results_dir: Directory holding `ensemble_strategies.csv` and
+            `ensemble_weights_*.json` (an evaluation.py `--out` folder).
+        prefix: Optional filename prefix for the saved figure.
+    """
+    csv_path = results_dir / "ensemble_strategies.csv"
+    if not csv_path.exists():
+        print(f"No {csv_path} -- skipping ensemble-strategy plot "
+              f"(run evaluation.py with --ensemble first).")
+        return
+
+    df = pd.read_csv(csv_path, index_col=0)
+    weights: Dict[str, Dict[str, float]] = {}
+    for name in df.index:
+        p = results_dir / f"ensemble_weights_{name}.json"
+        if p.exists():
+            with open(p) as f:
+                weights[name] = json.load(f)["weights"]
+
+    labels    = [_pretty_strategy(s) for s in df.index]
+    best      = df["rmse"].idxmin()
+    bar_colors = [ROYAL_PURPLE if s == best else DARK_SLATE for s in df.index]
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, max(3, len(df) * 0.7 + 1)), gridspec_kw={"wspace": 0.55})
+
+    ax = axes[0]
+    bars = ax.barh(labels, df["rmse"], color=bar_colors, alpha=0.85)
+    for bar, rmse, n_models in zip(bars, df["rmse"], df["n_models"]):
+        ax.text(rmse, bar.get_y() + bar.get_height() / 2, f"  {rmse:.4f} (n={int(n_models)})",
+                va="center", fontsize=8)
+    ax.set_xlabel("RMSE (lower is better)")
+    ax.set_title("Test RMSE", fontsize=10)
+    ax.invert_yaxis()
+
+    ax = axes[1]
+    bars = ax.barh(labels, df["r2"], color=bar_colors, alpha=0.85)
+    for bar, r2 in zip(bars, df["r2"]):
+        ax.text(r2, bar.get_y() + bar.get_height() / 2, f"  {r2:.3f}", va="center", fontsize=8)
+    ax.set_xlabel("R² (higher is better)")
+    ax.set_title("Test R²", fontsize=10)
+    ax.invert_yaxis()
+
+    ax = axes[2]
+    backends = sorted({k.split("_seed")[0] for w in weights.values() for k in w})
+    bottoms  = np.zeros(len(df))
+    for backend in backends:
+        counts = np.array([sum(1 for k in weights.get(s, {}) if k.split("_seed")[0] == backend)
+                           for s in df.index])
+        ax.barh(labels, counts, left=bottoms, color=COLOR_MAP.get(backend, DARK_SLATE),
+                alpha=0.85, label=backend)
+        bottoms += counts
+    ax.set_xlabel("Fold models in ensemble")
+    ax.set_title("Composition by backend", fontsize=10)
+    ax.legend(fontsize=8, loc="lower right")
+    ax.invert_yaxis()
+
+    fig.suptitle("Ensemble Strategies", fontsize=12, fontweight="bold")
+    save_fig(fig, f"{prefix}ensemble_strategies")
+
+
 def main() -> None:
     """CLI entry point: load exported CV artifacts and save the comparison figures."""
     ap = argparse.ArgumentParser()
@@ -342,6 +420,8 @@ def main() -> None:
     else:
         print("No test_predictions.pkl/test_metrics.csv in --results -- "
               "skipping test-set scatter plots (run evaluation.py with --test-csv first).")
+
+    plot_ensemble_strategies(res)
 
 
 if __name__ == "__main__":
