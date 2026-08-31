@@ -47,6 +47,8 @@ training = [
     "datasets>=5.0.0",
     # Statistics
     "statsmodels>=0.14",
+    "pingouin>=0.5",
+    "scikit-posthocs>=0.9",
     # Plotting
     "matplotlib>=3.10",
     "matplotlib-venn>=1.1",
