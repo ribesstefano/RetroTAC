@@ -2,9 +2,11 @@
 models_plots.py
 ========
 Figures for the model comparison, reading the artifacts exported by
-models_evaluation.py:
-  - cv_fold_scores.pkl   -> per-model list of fold R2 (for boxplots)
-  - cv_scores_long.csv   -> long format [method, seed, fold, cv_cycle, r2] (for Tukey)
+evaluation.py:
+  - cv_fold_scores.pkl   -> per-model, per-metric list of fold values
+                            (only the "r2" sub-dict is used, for boxplots)
+  - cv_scores_long.csv   -> long format [method, seed, fold, cv_cycle, <every metric>]
+                            (only "r2" is used here, for Tukey)
 
 Usage:
     python models_plots.py --results data/outputs/results/comparison
@@ -186,9 +188,10 @@ def main() -> None:
     args = ap.parse_args()
     res = Path(args.results)
 
-    fold_scores = pickle.load(open(res / "cv_fold_scores.pkl", "rb"))
-    df_cv       = pd.read_csv(res / "cv_scores_long.csv")
-    wide        = pd.read_csv(res / "cv_scores_wide.csv", index_col=[0, 1])   # (seed, fold) index
+    fold_metrics = pickle.load(open(res / "cv_fold_scores.pkl", "rb"))   # {model: {metric: [values]}}
+    fold_scores  = {label: metrics["r2"] for label, metrics in fold_metrics.items()}
+    df_cv        = pd.read_csv(res / "cv_scores_long.csv")
+    wide         = pd.read_csv(res / "cv_scores_wide.csv", header=[0, 1], index_col=[0, 1])   # (seed, fold) index
 
     # sanity: each model must contribute the same number of folds (balanced for rm-ANOVA)
     counts = df_cv.groupby("method")["r2"].count()
