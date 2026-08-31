@@ -83,8 +83,6 @@ MODEL=mlp sbatch slurm/aggregate.sh
 MODEL=gnn sbatch slurm/aggregate.sh
 ```
 
-
-
 ```bash
 apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
   python scripts/models/train.py \
@@ -102,3 +100,31 @@ Each fold's val predictions get scored with:
 
 - regression: r2, rmse, mae, medae, max_error, explained_variance, bias, pearson_r, spearman_rho, kendall_tau
 - binary @ 0.7: roc_auc, pr_auc, mcc, f1, precision, recall, specificity, balanced_accuracy, accuracy, cohen_kappa, pos_rate (the PR-AUC no-skill baseline), pred_pos_rate, tp/fp/tn/fn
+
+### Evaluation
+
+```bash
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/models/evaluation.py \
+    --models xgb_20260828_182305 mlp_20260828_182305 gnn_20260828_182305 \
+    --config config/models_config_routes.yaml \
+    --output-root outputs \
+    --out results_20260828_182305
+```
+
+With test set:
+
+```bash
+sbatch slurm/evaluate.sh
+
+# OR:
+
+srun -A berzelius-2026-62 -p berzelius --gpus=1 --time=00:30:00 --pty \
+  apptainer exec --nv $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/models/evaluation.py \
+    --models xgb_20260828_182305 mlp_20260828_182305 gnn_20260828_182305 \
+    --config config/models_config_routes.yaml \
+    --output-root outputs \
+    --out results_20260828_182305 \
+    --test-csv data/sets/routes_test.csv
+```
