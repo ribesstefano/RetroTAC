@@ -1,7 +1,7 @@
 """
 metrics.py
 ==========
-Evaluation metrics shared by the nested-CV loop (`protac_synth.models.training`).
+Evaluation metrics shared by the nested-CV loop (`retrotac.models.training`).
 
 Three groups, all operating on `(n_samples, n_targets)` arrays and averaging
 per-target column, the same convention each model's own `.score()` already uses:

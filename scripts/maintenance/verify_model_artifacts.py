@@ -1,6 +1,6 @@
 """Capture and replay golden predictions from the saved final models.
 
-Guards the protac_synth -> retrotac rename: the learned weights must not move.
+Guards the retrotac -> retrotac rename: the learned weights must not move.
 Run --capture before renaming anything, --verify after every phase.
 
     apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \\

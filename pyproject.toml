@@ -1,5 +1,5 @@
 [project]
-name = "protac-synthesizability"
+name = "retrotac"
 version = "0.1.0"
 description = "PROTAC synthesizability scoring pipeline"
 readme = "README.md"
@@ -86,7 +86,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["protac_synth*"]
+include = ["retrotac*"]
 
 [tool.uv]
 # Install the project itself (editable) so `protac_synth` imports from anywhere,

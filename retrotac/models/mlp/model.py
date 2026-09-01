@@ -23,7 +23,7 @@ from sklearn.metrics import r2_score
 from sklearn.preprocessing import QuantileTransformer
 from torch.utils.data import DataLoader, Dataset
 
-from protac_synth.chem_utils import (  # noqa: E402
+from retrotac.chem_utils import (  # noqa: E402
     compute_fingerprints,
     make_preprocessor,
     sanitize_matrix,
