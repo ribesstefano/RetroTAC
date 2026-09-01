@@ -62,7 +62,9 @@ package only:
 sys.modules["protac_synth"] = sys.modules["retrotac"]
 ```
 
-and emits a `DeprecationWarning`. This rescues artifacts nobody migrated: copies
+The alias is silent: a warning at install time would fire on every `import retrotac`,
+and warning only on genuine legacy use would need a `MetaPathFinder` that buys nothing
+over `migrate_skops_module_path.py --dry-run`. This rescues artifacts nobody migrated: copies
 published to Hugging Face, a colleague's `outputs/`, an old backup. Confirmed working:
 a dumped object whose defining package had been renamed away loaded correctly through
 the alias, fitted sklearn state included.
