@@ -141,7 +141,7 @@ def main() -> None:
 
 module load Mambaforge/23.3.1-1-hpc1-bdist
 eval "$(conda shell.bash hook)"
-mamba activate env-protac-synth
+mamba activate env-retrotac
 
 cd {_PROJECT_ROOT}
 

@@ -16,7 +16,7 @@
 
 module load Mambaforge/23.3.1-1-hpc1-bdist
 eval "$(conda shell.bash hook)"
-mamba activate env-protac-synth
+mamba activate env-retrotac
 
 export UV_CACHE_DIR="/proj/berzelius-2026-62/users/x_steri/.cache"
 

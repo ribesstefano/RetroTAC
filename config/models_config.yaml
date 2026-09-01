@@ -26,7 +26,7 @@ hpo:
   classification_threshold: 0.7
 
 tracking:
-  wandb_project: protac-synth
+  wandb_project: retrotac
   study_prefix: v1
 
 torch:                   # for the MLP/GNN later

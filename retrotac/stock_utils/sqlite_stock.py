@@ -11,7 +11,7 @@ disk instead of loaded into memory, and is used by ``get_scores.py`` and
 ``component_routes_scores.py``.
 
 Library module — imported, not run directly. Tables are populated by the
-builders in ``protac_synthesizability/stock/``.
+builders in ``retrotac/stock/``.
 
 Example
 -------

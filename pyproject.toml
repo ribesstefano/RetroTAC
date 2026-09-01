@@ -74,7 +74,7 @@ notebooks = ["jupyter>=1.1", "jupyterlab>=4.5", "ipywidgets>=7.8"]
 # project-wide. Local AiZynthFinder-based route search
 # (scripts/retrosynthesis/get_component_routes_and_scores.py,
 # get_protac_routes_and_scores.py, retro_scores/route_scores/
-# aizynthfinder_utils.py's live-search helpers, protac_synth/stock_utils/)
+# aizynthfinder_utils.py's live-search helpers, retrotac/stock_utils/)
 # is superseded by routes supplied externally (see SCORING.md Sec. 3.2) and
 # is no longer part of any supported environment or container. Those files
 # are left in place but are unsupported until aizynthfinder is installed
@@ -89,7 +89,7 @@ build-backend = "setuptools.build_meta"
 include = ["retrotac*"]
 
 [tool.uv]
-# Install the project itself (editable) so `protac_synth` imports from anywhere,
+# Install the project itself (editable) so `retrotac` imports from anywhere,
 # not just the repo root.
 package = true
 

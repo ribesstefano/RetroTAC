@@ -18,9 +18,9 @@ in stock, and **unsolved** otherwise.
 ## Examples
 
 ```bash
-python src/protac_synthesizability/route_analysis/analyze_routes.py \
+python src/retrotac/route_analysis/analyze_routes.py \
     data/processed/scores/protacs/exp_baseline.json
 
-python src/protac_synthesizability/route_analysis/plot_distributions.py \
+python src/retrotac/route_analysis/plot_distributions.py \
     data/processed/scores/protacs/exp_baseline.json
 ```
