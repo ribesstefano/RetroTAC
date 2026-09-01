@@ -8,7 +8,7 @@ precursor list and route length of a searched tree. More route-based scores
 will be added here later.
 
 Unlike `mol_scores`, this package's only heavy dependency is `aizynthfinder`
-itself, which the main `protac_synth` environment already installs — so this
+itself, which the main `retrotac` environment already installs — so this
 is meant to run there, not in `scoring_env`.
 
 Public API:

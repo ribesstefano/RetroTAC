@@ -21,12 +21,12 @@ import pandas as pd
 import yaml
 from optuna.trial import FixedTrial
 
-from protac_synth.chem_utils import (
+from retrotac.chem_utils import (
     compute_descriptors,
     compute_fingerprints,
     standardize_all,
 )
-from protac_synth.models.metrics import (
+from retrotac.models.metrics import (
     DEFAULT_CLF_THRESHOLD,
     DEFAULT_OBJECTIVE_ALPHA,
     compute_all_metrics,
@@ -59,13 +59,13 @@ def get_build_fn(model: str) -> Callable:
         ValueError: If `model` is not one of the supported names.
     """
     if model == "xgb":
-        from protac_synth.models.xgb.hpo import build_xgb
+        from retrotac.models.xgb.hpo import build_xgb
         return build_xgb
     if model == "mlp":
-        from protac_synth.models.mlp.hpo import build_mlp
+        from retrotac.models.mlp.hpo import build_mlp
         return build_mlp
     if model == "gnn":
-        from protac_synth.models.gnn.hpo import build_gnn
+        from retrotac.models.gnn.hpo import build_gnn
         return build_gnn
     raise ValueError(f"Invalid model name: {model}")
 
@@ -271,7 +271,7 @@ def tune_inner_fold(
 
     Each trial builds a model on the inner-train split and is scored on the
     inner-val split by the composite objective of
-    `protac_synth.models.metrics.hpo_objective` — a blend of RMSE and a
+    `retrotac.models.metrics.hpo_objective` — a blend of RMSE and a
     Spearman rank penalty, **minimised** (the study direction is "minimize";
     an inner-val R2, which was the objective before, is maximised, so a study
     DB from an earlier run is rejected rather than silently mixed in).
@@ -416,7 +416,7 @@ def run_single_fold(
     persist the result to score_seed{seed}_fold{fold_idx}.json.
 
     The fold-val predictions are scored with the full metric set of
-    `protac_synth.models.metrics.compute_all_metrics`: the regression metrics
+    `retrotac.models.metrics.compute_all_metrics`: the regression metrics
     (R2/RMSE/MAE/... plus Pearson/Spearman/Kendall) and the binary metrics that
     come from thresholding target and prediction at `clf_threshold`
     (ROC-AUC/PR-AUC/MCC/F1/...). All of them land flat in the score JSON, whose

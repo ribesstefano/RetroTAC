@@ -53,7 +53,7 @@ import numpy as np
 import pandas as pd
 from rdkit import DataStructs
 
-from protac_synth.chem_utils import (
+from retrotac.chem_utils import (
     canon_smiles,
     fg_vector,
     jaccard_fg,

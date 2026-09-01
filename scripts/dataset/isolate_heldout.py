@@ -88,7 +88,7 @@ from tqdm import tqdm
 from scipy.stats import skew
 from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
 
-from protac_synth.chem_utils import morgan_fp, papply, smiles_to_mol
+from retrotac.chem_utils import morgan_fp, papply, smiles_to_mol
 
 RDLogger.DisableLog("rdApp.*")
 
