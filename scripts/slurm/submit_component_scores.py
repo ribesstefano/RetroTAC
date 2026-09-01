@@ -205,7 +205,7 @@ def main() -> None:
 {mail_line}
 module load Mambaforge/23.3.1-1-hpc1-bdist
 eval "$(conda shell.bash hook)"
-mamba activate env-protac-synth
+mamba activate env-retrotac
 
 cd {REPO_ROOT}
 source .venv/bin/activate

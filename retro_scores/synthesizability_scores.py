@@ -11,8 +11,8 @@ README.md), installed separately from the main retrotac environment.
 Example
 -------
     python retro_scores/synthesizability_scores.py \
-        data/protac_synth_data.csv \
-        data/protac_synth_scores.csv \
+        data/retrotac_data.csv \
+        data/retrotac_scores.csv \
         --smiles-col molecule
 
 Typically invoked from slurm/submit_protac_scores.sh as a batch job.

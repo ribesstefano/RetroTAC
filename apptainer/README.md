@@ -104,7 +104,7 @@ as a uv extra at all — see its own comment block in that file.
 **4. The venv lives outside the code it serves — this is the one
 non-obvious trick that makes everything else work.** `%files` copies a
 build-time snapshot of the repo into `/opt/repo` inside the image (needed so
-the editable `protac_synth` install has *something* to point at), but
+the editable `retrotac` install has *something* to point at), but
 `UV_PROJECT_ENVIRONMENT=/opt/venv` puts the actual virtualenv at a path
 **outside** `/opt/repo`. At run time, bind-mounting your live checkout over
 `/opt/repo` (see "Why bind-mount instead of rebuild" below) replaces the
@@ -217,7 +217,7 @@ apptainer run --nv --writable-tmpfs --app score-mol-heavy $(bash apptainer/bind_
 Without `--app`, `apptainer run` uses `%runscript`, which just runs
 `python "$@"` inside `/opt/repo` — handy for anything not covered by a named
 app, e.g. `apptainer run $(bash apptainer/bind_live_repo.sh)
-apptainer/inference.sif -c "import protac_synth; print('ok')"`.
+apptainer/inference.sif -c "import retrotac; print('ok')"`.
 
 ### GPU caveat that applies even to plain inference
 
@@ -289,6 +289,6 @@ The kernel is the container's own `ipykernel` (installed as part of the
 For quick one-off checks you don't need a whole Jupyter server for:
 ```bash
 apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
-    python -c "from protac_synth.chem_utils import canon_smiles; print(canon_smiles('CCO'))"
+    python -c "from retrotac.chem_utils import canon_smiles; print(canon_smiles('CCO'))"
 ```
 Same live-mounted code, no server to manage, exits when the command does.
