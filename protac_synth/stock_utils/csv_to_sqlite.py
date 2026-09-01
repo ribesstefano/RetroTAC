@@ -55,27 +55,26 @@ Examples:
     python csv_to_sqlite.py vendor_results.csv stocks/aizynthfinder_stock.db
 """
 
-import sys
-import sqlite3
-import pandas as pd
-from rdkit import Chem
-from rdkit import RDLogger
 import argparse
+import sqlite3
+import sys
 from pathlib import Path
+from typing import Optional, Tuple
+
+import pandas as pd
+from rdkit import Chem, RDLogger
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 RDLogger.DisableLog('rdApp.*')
 
 
-def create_table(cursor, table_name):
-    """
-    Create a stock table and its InChIKey index if they do not already exist.
+def create_table(cursor: sqlite3.Cursor, table_name: str) -> None:
+    """Create a stock table and its InChIKey index if they do not already exist.
 
-    Parameters
-    ----------
-    cursor : sqlite3.Cursor
-    table_name : str
-        Name of the table to create.
+    Args:
+        cursor: Open SQLite cursor.
+        table_name: Name of the table to create.
     """
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS `{table_name}` (
@@ -87,18 +86,13 @@ def create_table(cursor, table_name):
     cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_inchi ON `{table_name}`(inchi_key)")
 
 
-def smiles_to_row(smiles_raw):
-    """
-    Validate a SMILES string and compute its InChIKey.
+def smiles_to_row(smiles_raw) -> Optional[Tuple[str, str]]:
+    """Validate a SMILES string and compute its InChIKey.
 
-    Parameters
-    ----------
-    smiles_raw : str or any
-        Raw SMILES value from the CSV cell.
+    Args:
+        smiles_raw: Raw SMILES value from the CSV cell (str or any).
 
-    Returns
-    -------
-    tuple(str, str) or None
+    Returns:
         (canonical_smiles, inchi_key) if valid, None otherwise.
     """
     try:
@@ -115,22 +109,17 @@ def smiles_to_row(smiles_raw):
     return None
 
 
-def csv_to_sqlite(csv_file, db_path, chunk_size=10000):
-    """
-    Read a vendor status CSV and populate vendor_stock and solved_stock tables.
+def csv_to_sqlite(csv_file: str, db_path: str, chunk_size: int = 10000) -> None:
+    """Read a vendor status CSV and populate vendor_stock and solved_stock tables.
 
     Auto-detects available columns for vendor status, solved status, and SMILES.
     Molecules with a vendor are written to vendor_stock; molecules solved by
     AiZynthFinder (if the column exists) are written to solved_stock.
 
-    Parameters
-    ----------
-    csv_file : str
-        Path to the input CSV file.
-    db_path : str
-        Path to the output SQLite database. Created if it does not exist.
-    chunk_size : int, optional
-        Number of CSV rows to process per iteration (default: 10000).
+    Args:
+        csv_file: Path to the input CSV file.
+        db_path: Path to the output SQLite database. Created if it does not exist.
+        chunk_size: Number of CSV rows to process per iteration.
     """
     print(f"Input : {csv_file}", flush=True)
     print(f"DB    : {db_path}  ->  tables: vendor_stock, solved_stock", flush=True)
@@ -138,25 +127,19 @@ def csv_to_sqlite(csv_file, db_path, chunk_size=10000):
 
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
-    conn   = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
     create_table(cursor, "vendor_stock")
     create_table(cursor, "solved_stock")
     conn.commit()
 
-    chunk_reader = pd.read_csv(csv_file, chunksize=chunk_size, low_memory=False)
-
-    total_vendor  = 0
-    total_solved  = 0
+    # Columns are auto-detected from the first chunk, then reused for the rest.
+    first_chunk = None
+    vendor_col = solved_col = smiles_col = None
+    total_vendor = 0
+    total_solved = 0
     total_skipped = 0
-
-# Detect columns from the first chunk and process all chunks
-    first_chunk    = None
-    vendor_col     = solved_col = smiles_col = None
-    total_vendor   = 0
-    total_solved   = 0
-    total_skipped  = 0
 
     for chunk in pd.read_csv(csv_file, chunksize=chunk_size, low_memory=False):
 
@@ -226,7 +209,7 @@ def csv_to_sqlite(csv_file, db_path, chunk_size=10000):
     conn.close()
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Load vendor status CSV into a SQLite stock database")
     parser.add_argument("input", type=str,
                         help="Path to input CSV file")

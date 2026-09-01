@@ -46,10 +46,12 @@ Arguments:
 
 import argparse
 import sqlite3
-import pandas as pd
-from rdkit import Chem
-from rdkit import RDLogger
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import pandas as pd
+from rdkit import Chem, RDLogger
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 RDLogger.DisableLog('rdApp.*')
@@ -68,16 +70,14 @@ COMPONENT_COL   = "components"
 SOLVED_TAG_COL  = "final_solved_tag"
 
 
-def create_table(cursor, table_name):
-    """
-    Create a stock table and its InChIKey index if they do not already exist.
+def create_table(cursor: sqlite3.Cursor, table_name: str) -> None:
+    """Create a stock table and its InChIKey index if they do not already exist.
 
-    Parameters
-    ----------
-    cursor : sqlite3.Cursor
-    table_name : str
-        Name of the table to create. Must match the name used when loading
-        the stock in AiZynthFinder (e.g. 'warhead', 'e3_ligase', 'linker').
+    Args:
+        cursor: Open SQLite cursor.
+        table_name: Name of the table to create. Must match the name used
+            when loading the stock in AiZynthFinder (e.g. 'warhead',
+            'e3_ligase', 'linker').
     """
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS `{table_name}` (
@@ -91,18 +91,13 @@ def create_table(cursor, table_name):
     )
 
 
-def smiles_to_row(smiles_raw):
-    """
-    Validate a SMILES string and compute its InChIKey.
+def smiles_to_row(smiles_raw) -> Optional[Tuple[str, str]]:
+    """Validate a SMILES string and compute its InChIKey.
 
-    Parameters
-    ----------
-    smiles_raw : str or any
-        Raw SMILES value from the CSV cell.
+    Args:
+        smiles_raw: Raw SMILES value from the CSV cell (str or any).
 
-    Returns
-    -------
-    tuple(str, str) or None
+    Returns:
         (canonical_smiles, inchi_key) if valid, None otherwise.
     """
     try:
@@ -119,22 +114,17 @@ def smiles_to_row(smiles_raw):
     return None
 
 
-def components_to_sqlite(csv_file, db_path, chunk_size=10000):
-    """
-    Read the components CSV and write solved components into per-type stock tables.
+def components_to_sqlite(csv_file: str, db_path: str, chunk_size: int = 10000) -> None:
+    """Read the components CSV and write solved components into per-type stock tables.
 
     Only rows where final_solved_tag == 1 are written. Each component type
     (warhead, e3_ligase, linker) gets its own table. Rows with unrecognised
     component labels or invalid SMILES are skipped and counted separately.
 
-    Parameters
-    ----------
-    csv_file : str
-        Path to the input components CSV file.
-    db_path : str
-        Path to the output SQLite database. Created if it does not exist.
-    chunk_size : int, optional
-        Number of CSV rows to process per iteration (default: 10000).
+    Args:
+        csv_file: Path to the input components CSV file.
+        db_path: Path to the output SQLite database. Created if it does not exist.
+        chunk_size: Number of CSV rows to process per iteration.
     """
     print(f"Input : {csv_file}", flush=True)
     print(f"DB    : {db_path}", flush=True)
@@ -163,7 +153,9 @@ def components_to_sqlite(csv_file, db_path, chunk_size=10000):
               end=" ", flush=True)
 
         # Bucket rows by target table
-        batch: dict[str, list] = {t: [] for t in set(COMPONENT_TABLE_MAP.values())}
+        batch: Dict[str, List[Tuple[str, str]]] = {
+            t: [] for t in set(COMPONENT_TABLE_MAP.values())
+        }
         chunk_skipped = 0
 
         for _, row in chunk.iterrows():
@@ -218,7 +210,8 @@ def components_to_sqlite(csv_file, db_path, chunk_size=10000):
 
     conn.close()
 
-def main():
+
+def main() -> None:
     parser = argparse.ArgumentParser(description="Upload components (warhead, e3 ligase and linker) to stocks database")
     parser.add_argument("input", type=str,
                         help="Path to CSV input file")
@@ -227,7 +220,6 @@ def main():
     args = parser.parse_args()
     components_to_sqlite(args.input, args.db_path)
 
+
 if __name__ == "__main__":
     main()
-
-    

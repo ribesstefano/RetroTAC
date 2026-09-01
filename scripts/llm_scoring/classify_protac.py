@@ -15,7 +15,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from tqdm import tqdm
@@ -24,9 +24,9 @@ from llm_scoring import JUDGE_MODEL, _use_lm, build_lm, configure_judge
 from models import ProtacClassifier
 
 
-def classify_smiles_parallel(smiles_list: list, include_rationale: bool = False,
+def classify_smiles_parallel(smiles_list: List[str], include_rationale: bool = False,
                              num_threads: int = 8, model: str = JUDGE_MODEL,
-                             temperature: Optional[float] = None) -> list[dict]:
+                             temperature: Optional[float] = None) -> List[Dict[str, Any]]:
     """Classify many SMILES concurrently.
 
     Returns one dict per input SMILES, keyed by `row_index` (its position in
@@ -46,7 +46,7 @@ def classify_smiles_parallel(smiles_list: list, include_rationale: bool = False,
     """
     classifier = ProtacClassifier(include_rationale=include_rationale)
 
-    def _one(i: int, smiles: str) -> dict:
+    def _one(i: int, smiles: str) -> Dict[str, Any]:
         try:
             lm = build_lm(model, temperature)
             with _use_lm(lm):
@@ -68,7 +68,7 @@ def classify_smiles_parallel(smiles_list: list, include_rationale: bool = False,
                 "llm_protac_error": repr(e),
             }
 
-    out_rows = []
+    out_rows: List[Dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=num_threads) as ex:
         futs = [ex.submit(_one, i, s) for i, s in enumerate(smiles_list)]
         for fut in tqdm(as_completed(futs), total=len(futs), desc="classifying PROTAC/non-PROTAC"):
@@ -91,6 +91,9 @@ def classify_csv(in_path: Path, out_path: Path, smiles_column: str = "SMILES",
         limit: If set, classify only the first N rows (for testing).
         model: litellm-style model string.
         temperature: Sampling temperature; None leaves the model's own default.
+
+    Raises:
+        ValueError: If `smiles_column` is not a column of `in_path`.
     """
     df = pd.read_csv(in_path)
     if smiles_column not in df.columns:
@@ -119,6 +122,11 @@ def classify_csv(in_path: Path, out_path: Path, smiles_column: str = "SMILES",
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for this script.
+
+    Returns:
+        The parsed argparse.Namespace.
+    """
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("in_csv", type=Path)
     ap.add_argument("out_csv", type=Path, help="input columns + appended llm_protac_* columns")
@@ -137,6 +145,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """CLI entry point: parse arguments and run `classify_csv`."""
     args = parse_args()
     classify_csv(args.in_csv, args.out_csv, smiles_column=args.smiles_column,
                 include_rationale=args.include_rationale, num_threads=args.threads,

@@ -58,28 +58,23 @@ from __future__ import annotations
 
 import json
 import os
-import sys
-from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from pathlib import Path
 from statistics import mean
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import dspy
 from dotenv import load_dotenv
 from tqdm import tqdm
 
 from models import USE_COT_DEFAULT, EnsembleScorer
+from route_parsing import ParsedRoute, describe_molecule, parse_route_row
 
 # API keys (GEMINI_API_KEY, OPENROUTER_API_KEY) live in .env at the project root;
 # load them into the environment before JUDGE_MODEL/os.getenv reads below.
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(_PROJECT_ROOT / ".env")
-
-# Add src/ to the path so protac_synth.route_parsing is importable.
-sys.path.append(str(_PROJECT_ROOT / "src"))
-
-from scripts.llm_scoring.route_parsing import ParsedRoute, describe_molecule, parse_route_row  # noqa: E402
 
 # --------------------------------------------------------------------------- #
 # 1. LM configuration
@@ -98,7 +93,15 @@ JUDGE_MODEL = os.getenv("JUDGE_MODEL", "gemini/gemini-3.1-pro-preview")
 def _resolve_api_key(model: str) -> Optional[str]:
     """Pick the API key matching the model's provider prefix. OpenRouter proxies
     every upstream provider behind one key, so it must be checked before the
-    upstream provider name (e.g. `openrouter/google/...` is NOT a `gemini/` call)."""
+    upstream provider name (e.g. `openrouter/google/...` is NOT a `gemini/` call).
+
+    Args:
+        model: litellm-style model string, `<provider>/<model>`.
+
+    Returns:
+        The matching API key from the environment, or None to let litellm fall
+        back to the provider's own env var.
+    """
     if model.startswith("openrouter/"):
         return os.getenv("OPENROUTER_API_KEY")
     if model.startswith("gemini/"):
@@ -111,13 +114,32 @@ def build_lm(model: str = JUDGE_MODEL, temperature: Optional[float] = None,
     """Construct a judge LM. cache=False is REQUIRED for ensemble sampling:
     with caching on, K identical requests return one cached completion and the
     ensemble variance collapses to zero. temperature=None leaves it unset, so
-    dspy.LM/litellm fall back to the chosen model's own default."""
+    dspy.LM/litellm fall back to the chosen model's own default.
+
+    Args:
+        model: litellm-style model string, `<provider>/<model>`.
+        temperature: Sampling temperature; None leaves the model's own default.
+        max_tokens: Max output tokens per completion.
+
+    Returns:
+        A configured, uncached dspy.LM instance.
+    """
     return dspy.LM(model, temperature=temperature, max_tokens=max_tokens,
                    api_key=_resolve_api_key(model), cache=False)
 
 
 def configure_judge(model: str = JUDGE_MODEL, temperature: Optional[float] = None,
                     max_tokens: int = 16000) -> dspy.LM:
+    """Build a judge LM and set it as dspy's global default with a JSONAdapter.
+
+    Args:
+        model: litellm-style model string, `<provider>/<model>`.
+        temperature: Sampling temperature; None leaves the model's own default.
+        max_tokens: Max output tokens per completion.
+
+    Returns:
+        The configured dspy.LM (same instance now set as the global default).
+    """
     lm = build_lm(model, temperature, max_tokens)
     # JSONAdapter makes typed/structured outputs robust across providers.
     dspy.configure(lm=lm, adapter=dspy.JSONAdapter())
@@ -126,7 +148,14 @@ def configure_judge(model: str = JUDGE_MODEL, temperature: Optional[float] = Non
 
 @contextmanager
 def _use_lm(lm: dspy.LM):
-    """Thread-local LM override so each worker reads its own call history."""
+    """Thread-local LM override so each worker reads its own call history.
+
+    Args:
+        lm: The LM instance this thread's dspy calls should use.
+
+    Yields:
+        None. Used only as a context manager for its scoping effect.
+    """
     ctx = getattr(dspy, "context", None) or dspy.settings.context
     with ctx(lm=lm):
         yield
@@ -135,10 +164,17 @@ def _use_lm(lm: dspy.LM):
 # --------------------------------------------------------------------------- #
 # 2. Flattening + serialization
 # --------------------------------------------------------------------------- #
-def to_output_row(pred: dspy.Prediction) -> dict:
+def to_output_row(pred: dspy.Prediction) -> Dict[str, Any]:
     """Flatten an EnsembleScorer prediction into `llm_*` columns to append to the
     input CSV. `llm_score` is the primary 0-100 (higher=better) value for BOTH
-    modes; route-only fields are null in molecule mode and vice versa."""
+    modes; route-only fields are null in molecule mode and vice versa.
+
+    Args:
+        pred: An EnsembleScorer prediction (see models.EnsembleScorer.forward).
+
+    Returns:
+        A flat dict of `llm_*` columns for one output row.
+    """
     row = {
         "llm_mode": pred.mode,
         "llm_score": pred.score_mean,
@@ -172,11 +208,18 @@ def to_output_row(pred: dspy.Prediction) -> dict:
     return row
 
 
-def _in_stock_row(parsed: ParsedRoute) -> dict:
+def _in_stock_row(parsed: ParsedRoute) -> Dict[str, Any]:
     """Perfect-score row for `parsed.in_stock` targets: resolved with 0
     reactions means the target IS the stock item, so there is nothing to
     judge. Mirrors the `llm_*` key set of `to_output_row` so both paths
-    concatenate onto the same CSV columns."""
+    concatenate onto the same CSV columns.
+
+    Args:
+        parsed: The in-stock target's ParsedRoute.
+
+    Returns:
+        A flat dict of `llm_*` columns for one output row, with a perfect score.
+    """
     return {
         "llm_mode": "in_stock",
         "llm_score": 100.0,
@@ -199,11 +242,19 @@ def _in_stock_row(parsed: ParsedRoute) -> dict:
     }
 
 
-def _dump_samples(pred: dspy.Prediction) -> list[dict]:
+def _dump_samples(pred: dspy.Prediction) -> List[Dict[str, Any]]:
     """Per-sample structured predictions -> plain dicts for JSONL persistence.
     These are the extracted LLM predictions; targets can be re-derived from them
-    without re-querying Gemini."""
-    out = []
+    without re-querying Gemini.
+
+    Args:
+        pred: An EnsembleScorer prediction whose `samples` list holds the raw
+            per-sample dspy.Prediction objects.
+
+    Returns:
+        One dict per sample (mode + evaluation payload as plain dicts).
+    """
+    out: List[Dict[str, Any]] = []
     for s in pred.samples:
         if hasattr(s, "route_evaluation"):
             out.append({
@@ -219,8 +270,15 @@ def _dump_samples(pred: dspy.Prediction) -> list[dict]:
     return out
 
 
-def _route_reactions_dump(parsed: ParsedRoute) -> list[dict]:
-    """Reaction table so step feedback (keyed by S-label) is joinable without a hash."""
+def _route_reactions_dump(parsed: ParsedRoute) -> List[Dict[str, Any]]:
+    """Reaction table so step feedback (keyed by S-label) is joinable without a hash.
+
+    Args:
+        parsed: The route's ParsedRoute.
+
+    Returns:
+        One dict per reaction (label, depth, product, precursors, note).
+    """
     return [
         {"label": r.label, "depth": r.depth,
          "product": r.product, "precursors": r.precursors, "note": r.metadata}
@@ -228,7 +286,15 @@ def _route_reactions_dump(parsed: ParsedRoute) -> list[dict]:
     ]
 
 
-def _response_text(hist_entry: dict) -> str:
+def _response_text(hist_entry: Dict[str, Any]) -> str:
+    """Extract the raw completion text from one dspy.LM history entry.
+
+    Args:
+        hist_entry: One entry from `dspy.LM.history`.
+
+    Returns:
+        The completion text, or "" if neither `outputs` nor `response` is set.
+    """
     o = hist_entry.get("outputs")
     if isinstance(o, list):
         return "\n".join(str(x) for x in o)
@@ -238,11 +304,20 @@ def _response_text(hist_entry: dict) -> str:
     return str(r) if r is not None else ""
 
 
-def _extract_raw(lm: dspy.LM, n: int) -> list[dict]:
+def _extract_raw(lm: dspy.LM, n: int) -> List[Dict[str, Any]]:
     """Best-effort capture of the last n raw completions from this worker's LM.
-    Thread-safe because each worker owns its own LM instance (see _use_lm)."""
+    Thread-safe because each worker owns its own LM instance (see _use_lm).
+
+    Args:
+        lm: The worker's own LM instance.
+        n: Number of most recent history entries to capture.
+
+    Returns:
+        One dict per captured completion (response_text, usage, cost). Entries
+        that fail to extract are silently skipped.
+    """
     hist = getattr(lm, "history", None) or []
-    out = []
+    out: List[Dict[str, Any]] = []
     for h in hist[-n:]:
         try:
             out.append({
@@ -258,23 +333,43 @@ def _extract_raw(lm: dspy.LM, n: int) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # 3. Batch runner
 # --------------------------------------------------------------------------- #
-def score_routes_parallel(rows: list[dict], scorer: Optional[dspy.Module] = None,
+def score_routes_parallel(rows: List[Dict[str, Any]], scorer: Optional[dspy.Module] = None,
                           k: int = 3, num_threads: int = 8,
                           use_cot: bool = USE_COT_DEFAULT,
                           score_steps: bool = False,
                           model: str = JUDGE_MODEL,
                           temperature: Optional[float] = None,
-                          capture_raw: bool = True):
+                          capture_raw: bool = True) -> Tuple[List[Dict[str, Any]],
+                                                              List[Dict[str, Any]],
+                                                              List[Dict[str, Any]]]:
     """Score many CSV rows concurrently.
 
-    Returns (out_rows, raw_records, errors):
-      * out_rows     : one dict per row (row_index + llm_* cols; llm_error set on failure)
-      * raw_records  : one dict per row for JSONL (structured samples + raw completions)
-      * errors       : subset that raised, for the console summary
-    Every input row yields exactly one out_row so the CSV append stays aligned."""
+    Every input row yields exactly one out_row so the CSV append stays aligned.
+
+    Args:
+        rows: Input CSV rows as dicts (from `df.to_dict("records")`).
+        scorer: Scorer module to use; defaults to a fresh EnsembleScorer built
+            from `k`/`use_cot`/`score_steps`.
+        k: LLM samples per row (denoising), used only if `scorer` is None.
+        num_threads: Worker threads for concurrent LLM calls.
+        use_cot: Use dspy.ChainOfThought instead of dspy.Predict, used only if
+            `scorer` is None.
+        score_steps: Also elicit per-step evaluations, used only if `scorer` is None.
+        model: litellm-style model string used to build each worker's own LM.
+        temperature: Sampling temperature; None leaves the model's own default.
+        capture_raw: Also capture raw LM completions into `raw_records`.
+
+    Returns:
+        A 3-tuple `(out_rows, raw_records, errors)`:
+            out_rows: One dict per row (row_index + llm_* cols; llm_error set
+                on failure).
+            raw_records: One dict per row for JSONL (structured samples + raw
+                completions).
+            errors: Subset that raised, for the console summary.
+    """
     scorer = scorer or EnsembleScorer(k=k, use_cot=use_cot, score_steps=score_steps)
 
-    def _one(i: int, row: dict):
+    def _one(i: int, row: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any], Optional[Dict[str, Any]]]:
         try:
             parsed = parse_route_row(row)
             if parsed.in_stock:  # purchasable as-is -- no LLM call needed
@@ -322,7 +417,9 @@ def score_routes_parallel(rows: list[dict], scorer: Optional[dspy.Module] = None
                        "samples": [], "raw_responses": [], "error": repr(e)}
             return out_row, raw_rec, err
 
-    out_rows, raw_records, errors = [], [], []
+    out_rows: List[Dict[str, Any]] = []
+    raw_records: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=num_threads) as ex:
         futs = [ex.submit(_one, i, r) for i, r in enumerate(rows)]
         for fut in tqdm(as_completed(futs), total=len(futs), desc="scoring routes"):
@@ -340,7 +437,20 @@ def score_csv(in_path: str, out_path: str, k: int = 3, num_threads: int = 8,
               model: str = JUDGE_MODEL, temperature: Optional[float] = None,
               raw_jsonl: Optional[str] = None) -> None:
     """Score every row and write `<input columns> + llm_* columns` to out_path.
-    If raw_jsonl is given, also persist raw per-sample predictions there."""
+    If raw_jsonl is given, also persist raw per-sample predictions there.
+
+    Args:
+        in_path: Input CSV path.
+        out_path: Output CSV path (input columns + appended llm_* columns).
+        k: LLM samples per row (denoising).
+        num_threads: Worker threads for concurrent LLM calls.
+        limit: If set, score a random sample of this many rows (for testing).
+        use_cot: Use dspy.ChainOfThought instead of dspy.Predict.
+        score_steps: Also elicit per-step evaluations alongside the route score.
+        model: litellm-style model string, `<provider>/<model>`.
+        temperature: Sampling temperature; None leaves the model's own default.
+        raw_jsonl: If given, write raw per-sample predictions to this JSONL path.
+    """
     import ast
     import pandas as pd
 

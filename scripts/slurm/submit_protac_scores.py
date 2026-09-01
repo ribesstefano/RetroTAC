@@ -34,7 +34,7 @@ from pathlib import Path
 import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCORER    = REPO_ROOT / "scripts" / "retrosynthesis" / "get_protac_routes_and_scores.py"
+SCORER = REPO_ROOT / "scripts" / "retrosynthesis" / "get_protac_routes_and_scores.py"
 
 
 def _count_molecules(csv: Path, smiles_col: str) -> int:
@@ -81,35 +81,35 @@ def parse_args() -> argparse.Namespace:
     )
 
     slurm = ap.add_argument_group("SLURM")
-    slurm.add_argument("--account",   required=True,
+    slurm.add_argument("--account", required=True,
                        help="SLURM account (e.g. berzelius-2026-62).")
     slurm.add_argument("--partition", default="berzelius-cpu",
                        help="SLURM partition.")
-    slurm.add_argument("--time",      default="12:00:00",
+    slurm.add_argument("--time", default="12:00:00",
                        help="Wall-clock time limit per task.")
-    slurm.add_argument("--cpus",      type=int, default=16,
+    slurm.add_argument("--cpus", type=int, default=16,
                        help="CPUs per task (--cpus-per-task). CPU nodes have 128 cores (2×AMD EPYC 9534); "
                             "16 fits 8 concurrent tasks per node and saturates TF intra-op parallelism.")
-    slurm.add_argument("--mem",       default="32G",
+    slurm.add_argument("--mem", default="32G",
                        help="Memory per task.")
-    slurm.add_argument("--job-name",  default="protac_scores",
+    slurm.add_argument("--job-name", default="protac_scores",
                        help="SLURM job name.")
-    slurm.add_argument("--log-dir",   type=Path,
+    slurm.add_argument("--log-dir", type=Path,
                        default=REPO_ROOT / "logs" / "protac_scores",
                        help="Directory for SLURM stdout/stderr logs and the sbatch script.")
-    slurm.add_argument("--mail",      default=None,
+    slurm.add_argument("--mail", default=None,
                        help="Email address for END/FAIL notifications.")
 
     scorer = ap.add_argument_group("scorer (forwarded to get_protac_routes_and_scores.py)")
-    scorer.add_argument("--csv",      required=True, type=Path,
+    scorer.add_argument("--csv", required=True, type=Path,
                         help="Input CSV containing SMILES to score.")
-    scorer.add_argument("--config",   required=True, type=Path,
+    scorer.add_argument("--config", required=True, type=Path,
                         help="AiZynthFinder config YAML.")
     scorer.add_argument("--stock_db", required=True, type=Path,
                         help="SQLite stock database.")
-    scorer.add_argument("--outdir",   required=True, type=Path,
+    scorer.add_argument("--outdir", required=True, type=Path,
                         help="Output directory for score CSVs and JSONL.")
-    scorer.add_argument("--prefix",   default="protac",
+    scorer.add_argument("--prefix", default="protac",
                         help="Filename stem for output files.")
     scorer.add_argument("--smiles_col", default="",
                         help="SMILES column in the input CSV (auto-detected if empty).")
@@ -133,11 +133,11 @@ def main() -> None:
     """Compute total_tasks, build the sbatch script, and submit (or dry-run)."""
     args = parse_args()
 
-    csv      = args.csv.resolve()
-    config   = args.config.resolve()
+    csv = args.csv.resolve()
+    config = args.config.resolve()
     stock_db = args.stock_db.resolve()
-    outdir   = args.outdir.resolve()
-    log_dir  = args.log_dir.resolve()
+    outdir = args.outdir.resolve()
+    log_dir = args.log_dir.resolve()
 
     for p, label in [(csv, "--csv"), (config, "--config"), (stock_db, "--stock_db")]:
         if not p.exists():
