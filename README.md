@@ -128,3 +128,85 @@ srun -A berzelius-2026-62 -p berzelius --gpus=1 --time=00:30:00 --pty \
     --out results_20260828_182305 \
     --test-csv data/sets/routes_test.csv
 ```
+
+#### Plotting
+
+```bash
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/models/plotting.py --results outputs/results/results_20260828_182305
+```
+
+#### Ensemble
+
+```bash
+ENSEMBLE=1 sbatch slurm/evaluate.sh
+
+# OR:
+
+apptainer exec --nv $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+    python scripts/models/evaluation.py \
+    --models xgb_20260828_182305 mlp_20260828_182305 gnn_20260828_182305 \
+    --config config/models_config_routes.yaml \
+    --output-root outputs \
+    --out routes_20260828_182305 \
+    --test-csv data/sets/routes_test.csv \
+    --ensemble
+
+# Rerunning cheaply once fold predictions are cached (e.g. to retune Caruana
+# without reloading 75 models):
+ENSEMBLE=1 ENSEMBLE_ITERATIONS=200 sbatch slurm/evaluate.sh   # skips load/predict, reuses cv_fold_test_predictions.pkl
+```
+
+## Results
+
+```
+[1/3] Loading CV fold metrics...
+
+Loaded 3 models over 25 paired folds.
+  XGB    mean r2 = 0.2374 ± 0.1210
+  MLP    mean r2 = 0.2902 ± 0.1141
+  GNN    mean r2 = 0.5094 ± 0.0559
+
+── AutoRank ─────────────────────────────────────────────────────────
+  Levene's test: p=0.0877 | max/min fold-variance ratio=4.6849 -> variances homogeneous
+Tests for normality and homoscedacity are ignored for test selection, forcing parametric tests
+     meanrank      mean       std  ...   magnitude effect_size_above magnitude_above
+XGB      2.68  0.237423  0.121024  ...  negligible               0.0      negligible
+MLP      2.32  0.290191  0.114066  ...       small         -0.448728           small
+GNN      1.00  0.509414  0.055914  ...       large         -2.440518           large
+
+[3 rows x 9 columns]
+The statistical analysis was conducted for 3 populations with 25 paired samples.
+The family-wise significance level of the tests is alpha=0.050.
+We rejected the null hypothesis that the population is normal for the population MLP (p=0.001). Therefore, we assume that not all populations are normal.
+Because we have more than two populations and the populations and one of them is not normal, we should use the non-parametric Friedman test as omnibus test to determine if there are any significant differences between the median values of the populations and report the median (MD) and the median absolute deviation (MAD). However, the user decided to force the use of repeated measures ANOVA as omnibus test which assume homoscedascity to determine if there are any significant difference between the mean values of the populations. If the results of the ANOVA test are significant, we use the post-hoc Tukey HSD test to infer which differences are significant. We report the mean value (M) and the standard deviation (SD) for each population. Populations are significantly different if their confidence intervals are not overlapping.
+We reject the null hypothesis (p=0.000) of the repeated measures ANOVA that there is a difference between the mean values of the populations XGB (M=0.237+-0.034, SD=0.121), MLP (M=0.290+-0.034, SD=0.114), and GNN (M=0.509+-0.034, SD=0.056). Therefore, we assume that there is a statistically significant difference between the mean values of the populations.
+Based on post-hoc Tukey HSD test, we assume that all differences between the populations are significant.
+
+[2/3] Evaluating final models on held-out test set (smiles_col='smiles', target_col='synthesizability')...
+  XGB    r2=0.441  rmse=0.165  mae=0.091  spearman_rho=0.661  clf_roc_auc=0.811
+  MLP    r2=0.467  rmse=0.161  mae=0.087  spearman_rho=0.665  clf_roc_auc=0.809
+  GNN    r2=0.536  rmse=0.150  mae=0.095  spearman_rho=0.666  clf_roc_auc=0.824
+
+[2b/3] Predicting test set with every 5x5-CV fold model...
+  Found cached fold predictions at outputs/results/results_20260828_182305/cv_fold_test_predictions.pkl -- skipping load/predict.
+
+[2c/3] Scoring ensemble strategies...
+
+  Caruana selection split: 463 selection / 1854 evaluation samples (every strategy is scored on the 1854-sample evaluation split)
+  Backend RMSE (uniform avg of all its fold models): GNN=0.1332, MLP=0.1437, XGB=0.1567 -> best_backend picks GNN
+
+── Ensemble strategies (scored on the shared evaluation split) ─────────
+  best_single  n_models=1   rmse=0.1378  r2=0.6160  composition={'GNN': 1}
+  uniform      n_models=75  rmse=0.1346  r2=0.6333  composition={'XGB': 25, 'MLP': 25, 'GNN': 25}
+  best_backend n_models=25  rmse=0.1332  r2=0.6413  composition={'GNN': 25}
+  caruana      n_models=27  rmse=0.1320  r2=0.6475  composition={'GNN': 13, 'MLP': 7, 'XGB': 7}
+
+              n_models           composition    rmse     r2  mean_std  unc_err_rho  cov_1sig_%  cov_2sig_%  cov_3sig_%  ece_%  mce_%
+strategy                                                                                                                            
+best_single          1                 GNN:1  0.1378  0.616       NaN          NaN         NaN         NaN         NaN   38.7   52.3
+uniform             75  XGB:25,MLP:25,GNN:25  0.1346  0.633    0.0693        0.332        46.9        70.3        83.7   37.3   52.2
+best_backend        25                GNN:25  0.1332  0.641    0.0481        0.369        38.2        66.6        82.0   37.5   52.5
+caruana             27    GNN:13,MLP:7,XGB:7  0.1320  0.647    0.0675        0.337        47.0        72.9        84.4   36.5   52.6
+  (expected coverage: 68.3% / 95.5% / 99.7% at 1σ/2σ/3σ; NaN = undefined for a 1-model ensemble; ECE/MCE treat the ensemble's raw prediction as P(synthesizable))
+```

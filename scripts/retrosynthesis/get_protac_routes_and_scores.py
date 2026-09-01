@@ -179,8 +179,14 @@ def main() -> None:
     args.outdir.mkdir(parents=True, exist_ok=True)
 
     # SLURM_ARRAY_TASK_ID is 1-based; convert to 0-based task_id.
-    task_id     = args.task_id     if args.task_id     is not None else int(os.environ.get("SLURM_ARRAY_TASK_ID",    1)) - 1
-    total_tasks = args.total_tasks if args.total_tasks is not None else int(os.environ.get("SLURM_ARRAY_TASK_COUNT", 1))
+    task_id = (
+        args.task_id if args.task_id is not None
+        else int(os.environ.get("SLURM_ARRAY_TASK_ID", 1)) - 1
+    )
+    total_tasks = (
+        args.total_tasks if args.total_tasks is not None
+        else int(os.environ.get("SLURM_ARRAY_TASK_COUNT", 1))
+    )
 
     all_molecules = load_smiles_from_csv(args.input_csv, args.smiles_col)
     logger.info("Loaded %d molecules from %s", len(all_molecules), args.input_csv)
@@ -195,7 +201,7 @@ def main() -> None:
     # concurrent tasks never write to the same file.
     stem = f"{args.prefix}_task{task_id}" if total_tasks > 1 else args.prefix
     out_jsonl = args.outdir / f"{stem}.jsonl"
-    out_sum   = args.outdir / f"{stem}_summary.csv"
+    out_sum = args.outdir / f"{stem}_summary.csv"
     out_precs = args.outdir / f"{stem}_precursors.csv"
     out_steps = args.outdir / f"{stem}_steps.csv"
 
@@ -253,13 +259,13 @@ def main() -> None:
                     pd.DataFrame(
                         [
                             {
-                                "molecule":            route_data["target_smiles"],
+                                "molecule": route_data["target_smiles"],
                                 "aizynthfinder_score": route_data["route_score"],
-                                "hac_weighted_score":  route_data["hac_weighted_score"],
-                                "search_time":         route_data["search_time_seconds"],
-                                "precursors":          len(route_data["precursors"]),
-                                "in_stock":            sum(1 for p in route_data["precursors"] if p["in_stock"]),
-                                "steps":               len(route_data["synthesis_steps"]),
+                                "hac_weighted_score": route_data["hac_weighted_score"],
+                                "search_time": route_data["search_time_seconds"],
+                                "precursors": len(route_data["precursors"]),
+                                "in_stock": sum(1 for p in route_data["precursors"] if p["in_stock"]),
+                                "steps": len(route_data["synthesis_steps"]),
                             }
                         ]
                     ),
@@ -268,11 +274,11 @@ def main() -> None:
                 prec_rows = pd.DataFrame(
                     [
                         {
-                            "molecule":  route_data["target_smiles"],
-                            "score":     route_data["route_score"],
+                            "molecule": route_data["target_smiles"],
+                            "score": route_data["route_score"],
                             "precursor": p["precursor_smiles"],
-                            "in_stock":  p["in_stock"],
-                            "stock":     p["stock_source"] or "N/A",
+                            "in_stock": p["in_stock"],
+                            "stock": p["stock_source"] or "N/A",
                         }
                         for p in route_data["precursors"]
                     ]
@@ -283,11 +289,11 @@ def main() -> None:
                 step_rows = pd.DataFrame(
                     [
                         {
-                            "molecule":    route_data["target_smiles"],
-                            "step":        s["step_number"],
-                            "reactants":   " + ".join(s["reactants"]),
-                            "product":     s["product"],
-                            "template":    s["template_code"],
+                            "molecule": route_data["target_smiles"],
+                            "step": s["step_number"],
+                            "reactants": " + ".join(s["reactants"]),
+                            "product": s["product"],
+                            "template": s["template_code"],
                             "probability": s["probability"],
                         }
                         for s in route_data["synthesis_steps"]
@@ -315,13 +321,13 @@ def main() -> None:
                     pd.DataFrame(
                         [
                             {
-                                "molecule":            smiles,
+                                "molecule": smiles,
                                 "aizynthfinder_score": 0.0,
-                                "hac_weighted_score":  0.0,
-                                "search_time":         float(search_time),
-                                "precursors":          0,
-                                "in_stock":            0,
-                                "steps":               0,
+                                "hac_weighted_score": 0.0,
+                                "search_time": float(search_time),
+                                "precursors": 0,
+                                "in_stock": 0,
+                                "steps": 0,
                             }
                         ]
                     ),

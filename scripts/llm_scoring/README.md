@@ -2,7 +2,7 @@
 
 
 ```bash
-uv run --extra llm_scoring scripts/llm_scoring/llm_scoring.py \
+uv run --extra scoring scripts/llm_scoring/llm_scoring.py \
     data/routes/routes.csv \
     data/llm_scoring/routes_with_score_`date +%Y%m%d%H%M%S`.csv \
     --k 3 \
@@ -20,7 +20,7 @@ Signatures, output schemas, and the DSPy scoring modules live in `models.py`.
 on a plain SMILES CSV -- no route/AiZynthFinder columns required:
 
 ```bash
-uv run --extra llm_scoring scripts/llm_scoring/classify_protac.py \
+uv run --extra scoring scripts/llm_scoring/classify_protac.py \
     data/some_molecules.csv \
     data/llm_scoring/molecules_classified_`date +%Y%m%d%H%M%S`.csv \
     --smiles-column SMILES \

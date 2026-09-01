@@ -8,17 +8,12 @@ argparse / threading / CSV I/O.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-from typing import Literal, Optional
+from typing import Dict, List, Literal
 
 import dspy
 from pydantic import BaseModel, Field
 
-# Add src/ to the path so protac_synth.route_parsing is importable.
-sys.path.append(str(Path(__file__).resolve().parents[2] / "src"))
-
-from scripts.llm_scoring.route_parsing import ParsedRoute, describe_molecule, render_route_for_llm  # noqa: E402
+from route_parsing import ParsedRoute, describe_molecule, render_route_for_llm
 
 # Default reasoning engine. See RouteScorer / the CoT note at the bottom: DSPy's
 # ChainOfThought is zero-shot (it needs no labelled examples); we default to bare
@@ -58,10 +53,12 @@ MoleculeCategory = Literal[
 
 
 class StepEvaluation(BaseModel):
+    """Per-step feasibility assessment, keyed by the route's `step_label` (e.g. "S1")."""
+
     step_label: str = Field(description="The step tag exactly as given, e.g. 'S1'.")
     rationale: str = Field(description="Concise chemical reasoning (mechanism, selectivity, precedent).")
     suggested_fix: str = Field(default="", description="Concrete alternative if not 'all good'.")
-    categories: list[ReactionCategory] = Field(
+    categories: List[ReactionCategory] = Field(
         min_length=1, max_length=2,
         description="1-2 categories, most appropriate first.")
     feasibility_score: float = Field(
@@ -73,9 +70,11 @@ class StepEvaluation(BaseModel):
 
 
 class RouteEvaluation(BaseModel):
+    """Whole-route feasibility assessment, incl. the primary `route_score`."""
+
     rationale: str = Field(description="Concise overall route feasibility reasoning.")
     convergence_comment: str = Field(description="Convergent vs linear; longest linear sequence.")
-    risk_factors: list[str] = Field(description="Ranked list of the main synthetic risks.")
+    risk_factors: List[str] = Field(description="Ranked list of the main synthetic risks.")
     category: RouteCategory
     route_score: float = Field(
         ge=0, le=100,
@@ -91,10 +90,10 @@ class RouteEvaluation(BaseModel):
 class MoleculeEvaluation(BaseModel):
     """Route-free assessment used when `resolved == False` (no usable route)."""
     rationale: str = Field(description="Concise de novo synthesizability reasoning.")
-    likely_disconnections: list[str] = Field(
+    likely_disconnections: List[str] = Field(
         default_factory=list,
         description="Brief strategic disconnections you would attempt.")
-    risk_factors: list[str] = Field(description="Ranked list of the main synthetic risks.")
+    risk_factors: List[str] = Field(description="Ranked list of the main synthetic risks.")
     category: MoleculeCategory
     synthesizability_score: float = Field(
         ge=0, le=100,
@@ -153,7 +152,7 @@ RULES
     route: str = dspy.InputField(desc="Compound legend + retrosynthetic steps.")
     search_metadata: str = dspy.InputField(desc="Route flags: resolved, depth, #steps, #BBs.")
 
-    step_evaluations: list[StepEvaluation] = dspy.OutputField(
+    step_evaluations: List[StepEvaluation] = dspy.OutputField(
         desc="One entry per step Sx, keyed by step_label.")
     route_evaluation: RouteEvaluation = dspy.OutputField(
         desc="Whole-route assessment incl. the primary route_score.")
@@ -263,6 +262,12 @@ class RouteScorer(dspy.Module):
     rationales; flip it on to A/B whether reason-then-score improves calibration."""
 
     def __init__(self, use_cot: bool = USE_COT_DEFAULT, score_steps: bool = False):
+        """Build the underlying dspy engine for the chosen signature.
+
+        Args:
+            use_cot: Use dspy.ChainOfThought instead of dspy.Predict.
+            score_steps: Also elicit per-step evaluations (pricier signature).
+        """
         super().__init__()
         engine = dspy.ChainOfThought if use_cot else dspy.Predict
         self.score_steps = score_steps
@@ -270,6 +275,16 @@ class RouteScorer(dspy.Module):
         self.score = engine(signature)
 
     def forward(self, parsed: ParsedRoute) -> dspy.Prediction:
+        """Grade one route.
+
+        Args:
+            parsed: The route to grade.
+
+        Returns:
+            A dspy.Prediction with `route_evaluation` (and `step_evaluations` if
+            `score_steps` is True, else `[]`), plus `mode`, `parsed`, and
+            `route_description` attached.
+        """
         rendered = render_route_for_llm(parsed)
         pred = self.score(
             target_smiles=parsed.target,
@@ -290,11 +305,25 @@ class MoleculeScorer(dspy.Module):
     """Route-free synthesizability scorer for `resolved == False` targets."""
 
     def __init__(self, use_cot: bool = USE_COT_DEFAULT):
+        """Build the underlying dspy engine.
+
+        Args:
+            use_cot: Use dspy.ChainOfThought instead of dspy.Predict.
+        """
         super().__init__()
         engine = dspy.ChainOfThought if use_cot else dspy.Predict
         self.score = engine(MoleculeSynthesizabilityScore)
 
     def forward(self, parsed: ParsedRoute) -> dspy.Prediction:
+        """Score one target's de novo synthesizability, ignoring its (unresolved) route.
+
+        Args:
+            parsed: The target's ParsedRoute; only `parsed.target` is used.
+
+        Returns:
+            A dspy.Prediction with `molecule_evaluation`, plus `mode`, `parsed`,
+            and `route_description` (empty string) attached.
+        """
         pred = self.score(
             target_smiles=parsed.target,
             molecular_context=describe_molecule(parsed.target),
@@ -314,11 +343,26 @@ class SynthesisScorer(dspy.Module):
     route has no reactions. Both paths return a 0-100 score, higher = better."""
 
     def __init__(self, use_cot: bool = USE_COT_DEFAULT, score_steps: bool = False):
+        """Build both underlying scorers.
+
+        Args:
+            use_cot: Use dspy.ChainOfThought instead of dspy.Predict, for both scorers.
+            score_steps: Passed through to RouteScorer.
+        """
         super().__init__()
         self.route = RouteScorer(use_cot=use_cot, score_steps=score_steps)
         self.molecule = MoleculeScorer(use_cot=use_cot)
 
     def forward(self, parsed: ParsedRoute) -> dspy.Prediction:
+        """Score one target, routing to route-grading or route-free scoring.
+
+        Args:
+            parsed: The target's ParsedRoute.
+
+        Returns:
+            The chosen sub-scorer's dspy.Prediction (see RouteScorer.forward /
+            MoleculeScorer.forward).
+        """
         molecule_only = (parsed.resolved is False) or (not parsed.reactions)
         return self.molecule(parsed) if molecule_only else self.route(parsed)
 
@@ -328,11 +372,34 @@ class EnsembleScorer(dspy.Module):
     estimate (score_std, category_agreement). Works for both scoring modes."""
 
     def __init__(self, k: int = 3, use_cot: bool = USE_COT_DEFAULT, score_steps: bool = False):
+        """Build the base scorer to be sampled K times.
+
+        Args:
+            k: Number of independent samples to draw per `forward` call.
+            use_cot: Use dspy.ChainOfThought instead of dspy.Predict.
+            score_steps: Passed through to SynthesisScorer/RouteScorer.
+        """
         super().__init__()
         self.k = k
         self.base = SynthesisScorer(use_cot=use_cot, score_steps=score_steps)
 
     def forward(self, parsed: ParsedRoute) -> dspy.Prediction:
+        """Sample the base scorer `self.k` times and aggregate.
+
+        Args:
+            parsed: The target's ParsedRoute.
+
+        Returns:
+            A dspy.Prediction with aggregated fields (score_mean/median/std,
+            category, category_agreement, confidence_mean, step_score_mean,
+            risk_factors, rationale, n_samples, samples, parsed,
+            route_description). The representative `risk_factors`/`rationale`
+            are taken from the sample whose score is closest to the median.
+
+        Raises:
+            Exception: The last sample's exception, if every one of the `k`
+                samples raised (no partial ensemble could be formed).
+        """
         from statistics import mean, median, pstdev
 
         samples = []
@@ -350,7 +417,7 @@ class EnsembleScorer(dspy.Module):
             scores = [s.route_evaluation.route_score for s in good]
             cats = [s.route_evaluation.category for s in good]
             confs = [s.route_evaluation.confidence for s in good]
-            per_step: dict[str, list[float]] = {}
+            per_step: Dict[str, List[float]] = {}
             for s in good:
                 for se in s.step_evaluations:
                     per_step.setdefault(se.step_label, []).append(se.feasibility_score)
@@ -396,6 +463,8 @@ ProtacLabel = Literal["PROTAC", "non-PROTAC"]
 
 
 class ProtacLabelOnly(BaseModel):
+    """PROTAC / non-PROTAC label with confidence, no rationale."""
+
     label: ProtacLabel = Field(
         description="'PROTAC' if the molecule is a bifunctional degrader (warhead + "
                     "linker + E3-ligase ligand, connected so as to bring a target "
@@ -404,6 +473,8 @@ class ProtacLabelOnly(BaseModel):
 
 
 class ProtacLabelWithRationale(BaseModel):
+    """PROTAC / non-PROTAC label with confidence and a concise rationale."""
+
     rationale: str = Field(description="Concise (1-2 sentence) structural justification for the label.")
     label: ProtacLabel = Field(
         description="'PROTAC' if the molecule is a bifunctional degrader (warhead + "
@@ -466,12 +537,26 @@ class ProtacClassifier(dspy.Module):
     needed for bulk classification runs (default off)."""
 
     def __init__(self, include_rationale: bool = False):
+        """Build the underlying dspy.Predict for the chosen signature.
+
+        Args:
+            include_rationale: Also elicit a concise rationale string (extra tokens).
+        """
         super().__init__()
         self.include_rationale = include_rationale
         signature = ClassifyProtacWithRationale if include_rationale else ClassifyProtac
         self.classify = dspy.Predict(signature)
 
     def forward(self, smiles: str) -> dspy.Prediction:
+        """Classify one molecule as PROTAC / non-PROTAC.
+
+        Args:
+            smiles: Molecule SMILES to classify.
+
+        Returns:
+            A dspy.Prediction with `classification` (ProtacLabelOnly or
+            ProtacLabelWithRationale) and `smiles` attached.
+        """
         pred = self.classify(
             target_smiles=smiles,
             molecular_context=describe_molecule(smiles),

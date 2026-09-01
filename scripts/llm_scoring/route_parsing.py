@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 try:
     from rdkit import Chem, RDLogger
@@ -39,11 +39,19 @@ def canonical_smiles(smi: str) -> str:
     return Chem.MolToSmiles(m) if m is not None else smi
 
 
-def _norm_resolved(x) -> Optional[bool]:
+def _norm_resolved(x: Any) -> Optional[bool]:
     """Coerce a CSV `resolved` value to a real bool/None.
 
     pandas may hand us a Python bool, numpy bool, 1/0, NaN, or the strings
-    "True"/"False". We need a genuine `is False` test downstream, so normalise."""
+    "True"/"False". We need a genuine `is False` test downstream, so normalise.
+
+    Args:
+        x: Raw value from the `resolved` column (bool, numpy bool, int, float
+            NaN, str, or None).
+
+    Returns:
+        True, False, or None if the value is missing/unrecognized.
+    """
     if x is None:
         return None
     if isinstance(x, str):
@@ -70,7 +78,15 @@ def describe_molecule(smi: str) -> str:
     RDKit descriptors give it weak structural grounding (size, ring systems,
     stereocentres, macrocyclicity). Degrades to just the SMILES if RDKit is
     missing or the molecule fails to parse. Delete this call if you'd rather the
-    judge work from the SMILES alone."""
+    judge work from the SMILES alone.
+
+    Args:
+        smi: Molecule SMILES to describe.
+
+    Returns:
+        A semicolon-separated line of RDKit descriptors, or a fallback string
+        naming just the SMILES if RDKit is unavailable or parsing fails.
+    """
     if not _HAS_RDKIT:
         return f"SMILES={smi}"
     from rdkit.Chem import Descriptors, rdMolDescriptors
@@ -103,44 +119,60 @@ def describe_molecule(smi: str) -> str:
 
 @dataclass
 class Reaction:
-    label: str               # human label used by the LLM: S1, S2, ...
+    """One retrosynthetic disconnection: a product SMILES split into precursors."""
+
+    label: str                  # human label used by the LLM: S1, S2, ...
     depth: int
     order_in_depth: int
-    product: str             # original SMILES
-    precursors: list[str]    # original SMILES
-    metadata: str = ""       # per-step note carried from the route source, e.g. "0.0 Unrecognized"
-    product_tag: str = ""    # legend tag, e.g. "T", "I1"
-    precursor_tags: list[str] = field(default_factory=list)
-    # Create the reaction SMILES
-    smiles: str = field(init=False)
+    product: str                 # original SMILES
+    precursors: List[str]        # original SMILES
+    metadata: str = ""           # per-step note carried from the route source, e.g. "0.0 Unrecognized"
+    product_tag: str = ""        # legend tag, e.g. "T", "I1"
+    precursor_tags: List[str] = field(default_factory=list)
+    smiles: str = field(init=False)  # derived reaction SMILES, set in __post_init__
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.smiles = f"{'.'.join(self.precursors)}>>{self.product}"
 
 
 @dataclass
 class ParsedRoute:
+    """A fully parsed, tag-annotated retrosynthesis route for one target molecule."""
+
     target: str
-    reactions: list[Reaction]
-    building_blocks: list[str]
+    reactions: List[Reaction]
+    building_blocks: List[str]
     resolved: Optional[bool] = None
     resolved_depth: Optional[int] = None
-    tag_to_smiles: dict[str, str] = field(default_factory=dict)
-    unresolved_leaves: list[str] = field(default_factory=list)
+    tag_to_smiles: Dict[str, str] = field(default_factory=dict)
+    unresolved_leaves: List[str] = field(default_factory=list)
     in_stock: bool = False  # resolved with 0 reactions: target itself is a stock item
 
 
 def parse_route(
-    route_cell,
+    route_cell: Any,
     target: Optional[str] = None,
-    building_blocks: Optional[list[str]] = None,
+    building_blocks: Optional[List[str]] = None,
     resolved: Optional[bool] = None,
     resolved_depth: Optional[int] = None,
 ) -> ParsedRoute:
-    """Parse one route cell (str literal or already-eval'd dict) into a ParsedRoute."""
+    """Parse one route cell (str literal or already-eval'd dict) into a ParsedRoute.
+
+    Args:
+        route_cell: A Python-literal dict string (or already-parsed dict) keyed
+            by tree depth, each value a list of `[reaction_str, metadata]` pairs.
+        target: Target molecule SMILES. If None, inferred from the depth-1
+            reaction's product.
+        building_blocks: Known purchasable building-block SMILES for this route.
+        resolved: Whether the route search resolved to purchasable material.
+        resolved_depth: Depth at which the route resolved, if known.
+
+    Returns:
+        The parsed, tag-annotated ParsedRoute.
+    """
     raw = ast.literal_eval(route_cell) if isinstance(route_cell, str) else route_cell
 
-    reactions: list[Reaction] = []
+    reactions: List[Reaction] = []
     n = 0
     for depth in sorted(raw.keys(), key=lambda d: int(d)):
         for j, entry in enumerate(raw[depth]):
@@ -176,7 +208,7 @@ def parse_route(
     return pr
 
 
-def parse_route_row(row: dict) -> ParsedRoute:
+def parse_route_row(row: Dict[str, Any]) -> ParsedRoute:
     """Parse one pandas row (dict) from the CSV.
 
     `resolved` is normalised to a real bool/None. If it is False, or the route
@@ -186,7 +218,15 @@ def parse_route_row(row: dict) -> ParsedRoute:
     "{}"), the target itself is a purchasable stock item; `ParsedRoute.in_stock`
     flags this so the caller can skip LLM scoring entirely and assign a
     perfect score. The `score` column is intentionally ignored (it is not a
-    reliable signal)."""
+    reliable signal).
+
+    Args:
+        row: One CSV row as a dict, expected to hold `SMILES`, `route`, `BBs`,
+            `resolved`, and `resolved_depth` keys.
+
+    Returns:
+        The parsed ParsedRoute for this row.
+    """
     bbs = row.get("BBs")
     if isinstance(bbs, str):
         try:
@@ -228,8 +268,14 @@ def parse_route_row(row: dict) -> ParsedRoute:
 
 
 def _assign_tags(pr: ParsedRoute) -> None:
-    tag: dict[str, str] = {}
-    smiles_of: dict[str, str] = {}
+    """Assign legend tags (T/I*/B*/U*) to every distinct compound in `pr`, in place.
+
+    Args:
+        pr: The ParsedRoute to annotate. `tag_to_smiles`, `unresolved_leaves`,
+            and each Reaction's `product_tag`/`precursor_tags` are mutated.
+    """
+    tag: Dict[str, str] = {}
+    smiles_of: Dict[str, str] = {}
 
     ct = canonical_smiles(pr.target)
     tag[ct] = "T"
@@ -268,14 +314,24 @@ def _assign_tags(pr: ParsedRoute) -> None:
 
 @dataclass
 class RenderedRoute:
+    """LLM-facing rendering of a ParsedRoute: legend+steps text plus a metadata line."""
+
     route_text: str
     meta_text: str
 
 
 def render_route_for_llm(pr: ParsedRoute) -> RenderedRoute:
     """Compact chemistry-style view: every structure appears once in a legend,
-    reactions reference short tags. Keeps huge PROTAC SMILES from repeating."""
-    def order_key(t: str):
+    reactions reference short tags. Keeps huge PROTAC SMILES from repeating.
+
+    Args:
+        pr: A tag-annotated ParsedRoute (i.e. already passed through `_assign_tags`,
+            as `parse_route`/`parse_route_row` do).
+
+    Returns:
+        A RenderedRoute with the legend+steps text and a short metadata line.
+    """
+    def order_key(t: str) -> tuple:
         rank = {"T": 0, "I": 1, "B": 2, "U": 3}[t[0]]
         num = int(t[1:]) if len(t) > 1 else 0
         return (rank, num)

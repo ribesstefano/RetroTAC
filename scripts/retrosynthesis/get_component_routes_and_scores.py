@@ -161,7 +161,7 @@ def main() -> None:
     # Four output streams: full JSONL checkpoint, summary row per molecule,
     # one row per precursor, and one row per synthesis step.
     out_jsonl = args.outdir / f"{prefix}_results.jsonl"
-    out_sum   = args.outdir / f"{prefix}_results_summary.csv"
+    out_sum = args.outdir / f"{prefix}_results_summary.csv"
     out_precs = args.outdir / f"{prefix}_results_precursors.csv"
     out_steps = args.outdir / f"{prefix}_results_steps.csv"
 

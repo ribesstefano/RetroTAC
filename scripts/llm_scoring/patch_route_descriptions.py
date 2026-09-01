@@ -12,21 +12,26 @@ from __future__ import annotations
 
 import argparse
 import shutil
-import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import pandas as pd
 from tqdm import tqdm
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-sys.path.append(str(_PROJECT_ROOT / "src"))
+from route_parsing import parse_route_row, render_route_for_llm
 
-from scripts.llm_scoring.route_parsing import parse_route_row, render_route_for_llm  # noqa: E402
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _route_description(row: Dict[str, Any]) -> str:
-    """Mirrors SynthesisScorer's route/molecule-only/in-stock branching, minus the LLM call."""
+    """Mirrors SynthesisScorer's route/molecule-only/in-stock branching, minus the LLM call.
+
+    Args:
+        row: One CSV row as a dict (needs `route`/`BBs`/`resolved`).
+
+    Returns:
+        The rendered compound legend + steps text, or "" for in-stock/routeless rows.
+    """
     parsed = parse_route_row(row)
     if parsed.in_stock or not parsed.reactions:
         return ""
@@ -51,7 +56,7 @@ def patch_route_descriptions(in_csv: Path, out_csv: Path, log_errors: bool = Fal
     df = pd.read_csv(in_csv)
     rows = df.to_dict("records")
 
-    descriptions = []
+    descriptions: List[str] = []
     n_errors = 0
     for i, row in enumerate(tqdm(rows, desc="rendering route trees")):
         try:
@@ -83,6 +88,11 @@ def patch_route_descriptions(in_csv: Path, out_csv: Path, log_errors: bool = Fal
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for this script.
+
+    Returns:
+        The parsed argparse.Namespace.
+    """
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--in-csv", type=Path,
                     default=_PROJECT_ROOT / "data/llm_scoring/routes_llm_scores.csv",
@@ -95,6 +105,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """CLI entry point: parse arguments and run `patch_route_descriptions`."""
     args = parse_args()
     out_csv = args.out_csv or args.in_csv
     patch_route_descriptions(args.in_csv, out_csv, log_errors=args.log_errors)

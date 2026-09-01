@@ -15,13 +15,13 @@ I/O
 """
 
 import argparse
-import sys
 from itertools import product
 from pathlib import Path
+from typing import Dict, List, Tuple
 
 import pandas as pd
-from tqdm import tqdm
 from rdkit import Chem, RDLogger
+from tqdm import tqdm
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -33,12 +33,24 @@ OUT_COLS = [
 ]
 
 # Disable RDKit warnings
-RDLogger.DisableLog('rdApp.*')
+RDLogger.DisableLog("rdApp.*")
+
 
 # ── Chemistry helpers ─────────────────────────────────────────────────────────
 
+
 def safe_mol(smiles: str) -> Chem.Mol:
-    """Parse SMILES and return an RDKit Mol, raising ValueError on failure."""
+    """Parse SMILES and return an RDKit Mol, raising ValueError on failure.
+
+    Args:
+        smiles: SMILES string to parse.
+
+    Returns:
+        Parsed RDKit Mol.
+
+    Raises:
+        ValueError: If ``smiles`` is empty/NaN or fails to parse.
+    """
     if pd.isna(smiles) or not str(smiles).strip():
         raise ValueError("empty SMILES")
     mol = Chem.MolFromSmiles(smiles)
@@ -52,6 +64,14 @@ def add_cap(rw_mol: Chem.RWMol, neighbor_idx: int, method: str) -> None:
 
     The dummy atom at the attachment point must already be removed before
     calling this function. H leaves no new atoms (implicit hydrogen).
+
+    Args:
+        rw_mol: Editable RDKit molecule; mutated in place.
+        neighbor_idx: Atom index the cap is bonded to.
+        method: Cap type, one of ``CAP_METHODS``.
+
+    Raises:
+        ValueError: If ``method`` is not a recognized cap type.
     """
     if method == "H":
         return
@@ -68,23 +88,23 @@ def add_cap(rw_mol: Chem.RWMol, neighbor_idx: int, method: str) -> None:
         o = rw_mol.AddAtom(Chem.Atom(8))
         rw_mol.AddBond(neighbor_idx, o, Chem.BondType.DOUBLE)
     elif method == "COOH":
-        c  = rw_mol.AddAtom(Chem.Atom(6))
+        c = rw_mol.AddAtom(Chem.Atom(6))
         o1 = rw_mol.AddAtom(Chem.Atom(8))
         o2 = rw_mol.AddAtom(Chem.Atom(8))
-        rw_mol.AddBond(neighbor_idx, c,  Chem.BondType.SINGLE)
+        rw_mol.AddBond(neighbor_idx, c, Chem.BondType.SINGLE)
         rw_mol.AddBond(c, o1, Chem.BondType.DOUBLE)
         rw_mol.AddBond(c, o2, Chem.BondType.SINGLE)
     else:
         raise ValueError(f"unknown cap method: {method!r}")
 
 
-def cap_component(smiles: str, caps: dict[int, str]) -> tuple[str, str, str]:
+def cap_component(smiles: str, caps: Dict[int, str]) -> Tuple[str, str, str]:
     """Replace dummy atoms with capping groups and return the resulting SMILES.
 
     Args:
         smiles: Component SMILES containing dummy atoms ([*:n]).
-        caps:   Mapping of attachment-point map number → cap method, e.g.
-                ``{1: "CH3"}`` for a warhead or ``{1: "H", 2: "OH"}`` for a linker.
+        caps: Mapping of attachment-point map number → cap method, e.g.
+            ``{1: "CH3"}`` for a warhead or ``{1: "H", 2: "OH"}`` for a linker.
 
     Returns:
         Tuple of (capped_smiles, canonical_smiles, error). On failure, the first
@@ -107,8 +127,8 @@ def cap_component(smiles: str, caps: dict[int, str]) -> tuple[str, str, str]:
 
         rw_mol = Chem.RWMol(mol)
         for map_num, method in sorted(caps.items(), key=lambda kv: dummy_idx_by_map[kv[0]], reverse=True):
-            dummy_idx   = dummy_idx_by_map[map_num]
-            nbrs        = [n.GetIdx() for n in rw_mol.GetAtomWithIdx(dummy_idx).GetNeighbors()]
+            dummy_idx = dummy_idx_by_map[map_num]
+            nbrs = [n.GetIdx() for n in rw_mol.GetAtomWithIdx(dummy_idx).GetNeighbors()]
             if len(nbrs) != 1:
                 raise ValueError(f"dummy atom [*:{map_num}] must have exactly one neighbor")
             neighbor_idx = nbrs[0]
@@ -130,10 +150,18 @@ def cap_component(smiles: str, caps: dict[int, str]) -> tuple[str, str, str]:
 
 # ── Builder ───────────────────────────────────────────────────────────────────
 
-def _cap_combos(attachment_maps: list[int]) -> list[dict[int, str]]:
+
+def _cap_combos(attachment_maps: List[int]) -> List[Dict[int, str]]:
     """All cap combinations for the given attachment-point map numbers.
 
     Single attachment point → 6 dicts; two attachment points → 36 dicts.
+
+    Args:
+        attachment_maps: Attachment-point map numbers to cap (e.g. ``[1]`` for
+            a warhead, ``[1, 2]`` for a linker).
+
+    Returns:
+        List of ``{map_number: cap_method}`` dicts, one per combination.
     """
     return [
         dict(zip(attachment_maps, combo))
@@ -145,7 +173,7 @@ def build_capped_df(
     df: pd.DataFrame,
     smiles_col: str,
     id_col: str,
-    attachment_maps: list[int],
+    attachment_maps: List[int],
     component_name: str,
 ) -> pd.DataFrame:
     """Enumerate all capped variants for one component type.
@@ -156,12 +184,12 @@ def build_capped_df(
     and OH at [*:2]).
 
     Args:
-        df:               Source DataFrame (master table).
-        smiles_col:       Column with component SMILES including dummy atoms.
-        id_col:           Column with the component's sequential ID.
-        attachment_maps:  Ordered list of attachment-point map numbers to cap
-                          (``[1]`` for warhead, ``[2]`` for E3, ``[1, 2]`` for linker).
-        component_name:   Label written to the ``component`` column.
+        df: Source DataFrame (master table).
+        smiles_col: Column with component SMILES including dummy atoms.
+        id_col: Column with the component's sequential ID.
+        attachment_maps: Ordered list of attachment-point map numbers to cap
+            (``[1]`` for warhead, ``[2]`` for E3, ``[1, 2]`` for linker).
+        component_name: Label written to the ``component`` column.
 
     Returns:
         DataFrame with columns matching ``OUT_COLS``.
@@ -169,25 +197,31 @@ def build_capped_df(
     unique = df[[smiles_col, id_col]].dropna(subset=[smiles_col]).drop_duplicates(subset=[smiles_col])
     rows = []
     for _, row in tqdm(unique.iterrows(), total=len(unique), desc=f"Capping {component_name} components"):
-        smiles  = row[smiles_col]
+        smiles = row[smiles_col]
         comp_id = row[id_col]
         for caps in _cap_combos(attachment_maps):
             capped, canon, error = cap_component(smiles, caps)
             rows.append({
-                "component_id":                comp_id,
+                "component_id": comp_id,
                 "component_smiles_with_dummy": smiles,
-                "cap_type":                    "|".join(caps[m] for m in sorted(caps)),
-                "cap_smiles":                  canon,
-                "error":                       error,
+                "cap_type": "|".join(caps[m] for m in sorted(caps)),
+                "cap_smiles": canon,
+                "error": error,
             })
     return pd.DataFrame(rows, columns=OUT_COLS)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Returns:
+        Populated ``argparse.Namespace``.
+    """
     p = argparse.ArgumentParser(description="Cap component attachment points.")
-    p.add_argument("--input",  type=Path, default=_PROJECT_ROOT / "data/processed/protac_smiles_master_std.csv",
+    p.add_argument("--input", type=Path, default=_PROJECT_ROOT / "data/processed/protac_smiles_master_std.csv",
                    help="Master PROTAC table (build_protac_master_table output).")
     p.add_argument("--output", type=Path, default=_PROJECT_ROOT / "data/processed/component_capped.csv",
                    help="Destination CSV.")
@@ -198,6 +232,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def main(input_path: Path, output_path: Path, log_errors: bool = False) -> None:
+    """Cap every component's attachment points and write the enumerated variants.
+
+    Args:
+        input_path: Master PROTAC table CSV (build_protac_master_table output).
+        output_path: Destination CSV.
+        log_errors: If True, keep failed rows with an ``error`` column instead
+            of dropping them.
+    """
     df = pd.read_csv(input_path)
 
     parts = [
