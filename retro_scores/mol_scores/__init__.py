@@ -6,7 +6,7 @@ scorers (SA score, SCScore, RAscore, SYBA, GASA, FSscore), each with a raw
 and a scaled value. Each scorer only needs a SMILES string, no retrosynthesis
 route (contrast with the sibling `route_scores` package).
 
-Installed and run separately from the main `protac_synth` package (see
+Installed and run separately from the main `retrotac` package (see
 README.md in this directory): the dependency stack here (TF 2.8 +
 torch 2.0 + dgl 2.1 + old xgboost, three git-cloned/manually-fetched
 models) is fragile and Python-3.10-pinned, so it lives in its own

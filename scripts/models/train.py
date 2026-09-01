@@ -3,7 +3,7 @@ scripts/models/train.py
 ========================
 CLI entry point for 5x5 nested scaffold cross-validation of the PROTAC
 synthesizability surrogate models (xgb / mlp / gnn). The library logic lives
-in protac_synth.models.training; this script only parses args, loads config,
+in retrotac.models.training; this script only parses args, loads config,
 and wires paths + config values through.
 
 All modelling knobs (SMILES column, target, seeds, fp params, feature flags)
@@ -26,9 +26,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from protac_synth.chem_utils import get_scaffold  # noqa: E402
-from protac_synth.models.config import ModelsConfig  # noqa: E402
-from protac_synth.models.training import (  # noqa: E402
+from retrotac.chem_utils import get_scaffold  # noqa: E402
+from retrotac.models.config import ModelsConfig  # noqa: E402
+from retrotac.models.training import (  # noqa: E402
     aggregate_results, cache_features, get_build_fn, prepare_inputs, run_single_fold,
 )
 

@@ -21,7 +21,7 @@ from typing import Any
 import pandas as pd
 from rdkit import RDLogger
 
-from protac_synth.chem_utils import (
+from retrotac.chem_utils import (
     canon_smiles,
     make_hash_ids,
     make_sequential_ids,

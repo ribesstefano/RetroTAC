@@ -1,11 +1,11 @@
 """Run inference with a saved PROTAC synthesizability surrogate (xgb / mlp / gnn)
 over a CSV of SMILES. Loads a model saved by scripts/models/train.py's
---aggregate step (protac_synth.models.{xgb,mlp,gnn}.model's Backend.save()),
+--aggregate step (retrotac.models.{xgb,mlp,gnn}.model's Backend.save()),
 either from a local path or a Hugging Face Hub repo, and writes predictions
 appended to the input CSV.
 
 Every backend shares the same load/predict contract (see
-protac_synth.models.training.get_build_fn's siblings): Backend.load(path) /
+retrotac.models.training.get_build_fn's siblings): Backend.load(path) /
 Backend.from_hf(hf_repo, hf_model_id) restores a fitted model, and
 .predict(smiles_list) returns an (n_molecules, n_targets) array. This script
 is a thin CLI over that contract -- all featurization/preprocessing is
@@ -50,11 +50,11 @@ def _load_model(model: str, model_path: Optional[Path], hf_repo: Optional[str],
         ValueError: If `model` is not one of the supported names.
     """
     if model == "xgb":
-        from protac_synth.models.xgb.model import XGBoostRegressor as Backend
+        from retrotac.models.xgb.model import XGBoostRegressor as Backend
     elif model == "mlp":
-        from protac_synth.models.mlp.model import TorchMLPRegressor as Backend
+        from retrotac.models.mlp.model import TorchMLPRegressor as Backend
     elif model == "gnn":
-        from protac_synth.models.gnn.model import CheMeleonRegressor as Backend
+        from retrotac.models.gnn.model import CheMeleonRegressor as Backend
     else:
         raise ValueError(f"Invalid model name: {model}")
 
