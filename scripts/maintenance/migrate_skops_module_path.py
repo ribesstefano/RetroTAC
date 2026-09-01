@@ -39,7 +39,9 @@ def migrate(path: Path, dry_run: bool) -> bool:
 
     backup = path.with_suffix(path.suffix + ".bak")
     if not backup.exists():
-        shutil.copy2(path, backup)
+        backup_tmp = path.with_suffix(path.suffix + ".bak.tmp")
+        shutil.copy2(path, backup_tmp)
+        backup_tmp.replace(backup)
 
     tmp = path.with_suffix(path.suffix + ".tmp")
     with zipfile.ZipFile(path) as zin, zipfile.ZipFile(
@@ -58,6 +60,15 @@ def revert(path: Path) -> bool:
     """Restore one archive from its .bak sidecar. True if restored."""
     backup = path.with_suffix(path.suffix + ".bak")
     if not backup.exists():
+        return False
+    try:
+        with zipfile.ZipFile(backup) as zf:
+            schema = zf.read(SCHEMA).decode()
+    except (zipfile.BadZipFile, KeyError):
+        print(f"  SKIP {path}: backup is not a readable .skops archive")
+        return False
+    if OLD not in schema:
+        print(f"  SKIP {path}: backup does not predate the migration")
         return False
     shutil.copy2(backup, path)
     return True
