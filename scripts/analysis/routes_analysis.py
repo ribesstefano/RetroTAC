@@ -62,9 +62,11 @@ import argparse
 import csv
 import json
 import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import numpy as np
 from tabulate import tabulate
-from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -73,22 +75,17 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # I/O HELPERS
 # ============================================================
 
-def load_routes(json_path: str) -> list:
-    """
-    Load route records from a JSON or JSONL file.
+def load_routes(json_path: str) -> List[Dict[str, Any]]:
+    """Load route records from a JSON or JSONL file.
 
     Tries to parse the file as a standard JSON document first. If that fails
     (e.g. the file is newline-delimited JSON), falls back to parsing each
     non-empty line independently. Malformed lines raise an exception.
 
-    Parameters
-    ----------
-    json_path : str
-        Path to the input file.
+    Args:
+        json_path: Path to the input file.
 
-    Returns
-    -------
-    list[dict]
+    Returns:
         List of route record dictionaries.
     """
     with open(json_path, "r") as f:
@@ -105,20 +102,15 @@ def load_routes(json_path: str) -> list:
 # STATISTICS HELPER
 # ============================================================
 
-def stats(values: list) -> dict:
-    """
-    Compute descriptive statistics for a list of numeric values.
+def stats(values: List[float]) -> Dict[str, Optional[float]]:
+    """Compute descriptive statistics for a list of numeric values.
 
-    Parameters
-    ----------
-    values : list[float]
-        Input values. May be empty.
+    Args:
+        values: Input values. May be empty.
 
-    Returns
-    -------
-    dict
-        Keys: ``mean``, ``median``, ``std``, ``min``, ``max``, ``p90``, ``p95``.
-        All values are ``None`` if the input list is empty.
+    Returns:
+        Dict with keys ``mean``, ``median``, ``std``, ``min``, ``max``, ``p90``,
+        ``p95``. All values are ``None`` if the input list is empty.
     """
     values = list(values)
 
@@ -140,20 +132,15 @@ def stats(values: list) -> dict:
 # MAIN ANALYSIS
 # ============================================================
 
-def analyze_routes(json_path: str) -> dict:
-    """
-    Split routes into solved/unsolved groups and compute statistics for each.
+def analyze_routes(json_path: str) -> Dict[str, Any]:
+    """Split routes into solved/unsolved groups and compute statistics for each.
 
     A route is **solved** if every precursor has ``in_stock == True``.
 
-    Parameters
-    ----------
-    json_path : str
-        Path to the JSON or JSONL input file.
+    Args:
+        json_path: Path to the JSON or JSONL input file.
 
-    Returns
-    -------
-    dict
+    Returns:
         Summary dictionary with the following keys:
 
         - ``n_molecules``        : total number of routes.
@@ -207,7 +194,13 @@ def analyze_routes(json_path: str) -> dict:
 # OUTPUT HELPERS
 # ============================================================
 
-def write_csv(summary: dict, csv_path: Path) -> None:
+def write_csv(summary: Dict[str, Any], csv_path: Path) -> None:
+    """Write the analysis summary as a machine-readable CSV.
+
+    Args:
+        summary: Summary dict returned by `analyze_routes`.
+        csv_path: Destination CSV path.
+    """
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
         # Summary counts at the top
@@ -227,21 +220,15 @@ def write_csv(summary: dict, csv_path: Path) -> None:
                 ])
 
 
-def print_block(title: str, count: int, ratio: float, block: dict) -> None:
-    """
-    Pretty-print a statistics block for one group (solved or unsolved).
+def print_block(title: str, count: int, ratio: float, block: Dict[str, Dict[str, Optional[float]]]) -> None:
+    """Pretty-print a statistics block for one group (solved or unsolved).
 
-    Parameters
-    ----------
-    title : str
-        Section header (e.g. ``"Solved"``).
-    count : int
-        Number of molecules in the group.
-    ratio : float
-        Fraction of total molecules in the group.
-    block : dict
-        Dict with keys ``old_score``, ``new_score``, ``search_time``,
-        ``route_length``; each value is a stats dict from :func:`stats`.
+    Args:
+        title: Section header (e.g. ``"Solved"``).
+        count: Number of molecules in the group.
+        ratio: Fraction of total molecules in the group.
+        block: Dict with keys ``old_score``, ``new_score``, ``search_time``,
+            ``route_length``; each value is a stats dict from `stats`.
     """
     print(f"\n--- {title} ---")
     print(f"Count: {count}    Ratio: {ratio:.2%}")
@@ -276,15 +263,15 @@ def print_block(title: str, count: int, ratio: float, block: dict) -> None:
 class Tee:
     """Write simultaneously to stdout (captured by SLURM) and a log file."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path) -> None:
         self._stdout = sys.stdout  # save original stdout before reassignment
         self.file = open(path, "w")
 
-    def write(self, data: str):
+    def write(self, data: str) -> None:
         self._stdout.write(data)   # use saved reference, not sys.stdout
         self.file.write(data)
 
-    def flush(self):
+    def flush(self) -> None:
         self._stdout.flush()       # same here
         self.file.flush()
 
@@ -293,7 +280,8 @@ class Tee:
 # ENTRY POINT
 # ============================================================
 
-def main():
+def main() -> None:
+    """CLI entry point: analyze a routes JSON/JSONL file and write CSV + TXT reports."""
     parser = argparse.ArgumentParser(
         description=(
             "Read JSON/JSONL routes and generate descriptive statistics "
@@ -350,7 +338,6 @@ def main():
         sys.stdout = sys.__stdout__
 
     print(f"✓ Report saved to: {report_path}")
-
 
 
 if __name__ == "__main__":

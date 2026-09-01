@@ -1,0 +1,1 @@
+rsync -avz --progress /mimer/NOBACKUP/groups/naiss2023-6-290/tingtingmo/matser_thesis_2026_PROTAC_Synthesizability/data/external stefano@AIME-NAS.cse.chalmers.se:/volume1/aime/stefano/

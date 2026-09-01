@@ -53,11 +53,7 @@ import numpy as np
 import pandas as pd
 from rdkit import DataStructs
 
-warnings.filterwarnings("ignore")
-
-sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
-
-from chem_utils import (  # noqa: E402
+from protac_synth.chem_utils import (
     canon_smiles,
     fg_vector,
     jaccard_fg,
@@ -66,6 +62,8 @@ from chem_utils import (  # noqa: E402
     smiles_to_mol,
     tanimoto_distance,
 )
+
+warnings.filterwarnings("ignore")
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -171,9 +169,9 @@ def select_diverse(
     if n < k:
         sys.exit(f"ERROR: Only {n} candidate molecules available but k={k} requested.")
 
-    fps       = df["_fp"].tolist()
-    fgvs      = np.stack(df["_fg"].values)
-    comp_fps  = df["_comp_fps"].tolist()
+    fps = df["_fp"].tolist()
+    fgvs = np.stack(df["_fg"].values)
+    comp_fps = df["_comp_fps"].tolist()
 
     if seed_fps:
         print(f"  Seeding distances from {len(seed_fps)} existing molecules …")
@@ -182,8 +180,8 @@ def select_diverse(
         selected = []
 
         used_warhead_fps = [c[0] for c in seed_comp_fps if c[0] is not None]
-        used_e3_fps      = [c[1] for c in seed_comp_fps if c[1] is not None]
-        used_linker_fps  = [c[2] for c in seed_comp_fps if c[2] is not None]
+        used_e3_fps = [c[1] for c in seed_comp_fps if c[1] is not None]
+        used_linker_fps = [c[2] for c in seed_comp_fps if c[2] is not None]
 
     else:
         rng = np.random.default_rng(seed)
@@ -194,18 +192,18 @@ def select_diverse(
         dist_fg = np.array([jaccard_fg(fgvs[i], fgvs[start]) for i in range(n)])
 
         wh0, e3_0, lnk0 = comp_fps[start]
-        used_warhead_fps = [wh0]  if wh0  is not None else []
-        used_e3_fps      = [e3_0] if e3_0 is not None else []
-        used_linker_fps  = [lnk0] if lnk0 is not None else []
+        used_warhead_fps = [wh0] if wh0 is not None else []
+        used_e3_fps = [e3_0] if e3_0 is not None else []
+        used_linker_fps = [lnk0] if lnk0 is not None else []
 
     while len(selected) < k:
         # Each novel component contributes 1/3 to the bonus (range 0.0–1.0).
         comp_bonus = np.array(
             [
                 (
-                    is_novel_component(wh,  used_warhead_fps, comp_threshold) +
-                    is_novel_component(e3,  used_e3_fps,      comp_threshold) +
-                    is_novel_component(lnk, used_linker_fps,  comp_threshold)
+                    is_novel_component(wh, used_warhead_fps, comp_threshold) +
+                    is_novel_component(e3, used_e3_fps, comp_threshold) +
+                    is_novel_component(lnk, used_linker_fps, comp_threshold)
                 ) / 3.0
                 for wh, e3, lnk in comp_fps
             ]
@@ -219,9 +217,12 @@ def select_diverse(
         selected.append(best)
 
         wh_best, e3_best, lnk_best = comp_fps[best]
-        if wh_best  is not None: used_warhead_fps.append(wh_best)
-        if e3_best  is not None: used_e3_fps.append(e3_best)
-        if lnk_best is not None: used_linker_fps.append(lnk_best)
+        if wh_best is not None:
+            used_warhead_fps.append(wh_best)
+        if e3_best is not None:
+            used_e3_fps.append(e3_best)
+        if lnk_best is not None:
+            used_linker_fps.append(lnk_best)
 
         for i in range(n):
             dist_fp[i] = min(dist_fp[i], tanimoto_distance(fps[i], fps[best]))
@@ -264,8 +265,8 @@ def main() -> None:
     total = args.fp_weight + args.fg_weight + args.comp_weight
     if abs(total - 1.0) > 1e-3:
         print(f"⚠  Weights sum to {total:.3f} — normalising to 1.0")
-        args.fp_weight   /= total
-        args.fg_weight   /= total
+        args.fp_weight /= total
+        args.fg_weight /= total
         args.comp_weight /= total
 
     print(f"Loading master CSV: {args.master} …")
@@ -330,11 +331,11 @@ def main() -> None:
             df[col] = ""
     df["_comp_fps"] = df.apply(component_fps_for_row, axis=1)
 
-    n_missing_wh  = df["_comp_fps"].apply(lambda t: t[0] is None).sum()
-    n_missing_e3  = df["_comp_fps"].apply(lambda t: t[1] is None).sum()
+    n_missing_wh = df["_comp_fps"].apply(lambda t: t[0] is None).sum()
+    n_missing_e3 = df["_comp_fps"].apply(lambda t: t[1] is None).sum()
     n_missing_lnk = df["_comp_fps"].apply(lambda t: t[2] is None).sum()
     if any([n_missing_wh, n_missing_e3, n_missing_lnk]):
-        print(f"  ⚠  Components with unparseable SMILES (treated as novel):")
+        print("  ⚠  Components with unparseable SMILES (treated as novel):")
         print(f"     warhead={n_missing_wh}  |  E3={n_missing_e3}  |  linker={n_missing_lnk}")
 
     print(f"\nRunning greedy MaxMin selection (k={args.k}) …")
@@ -366,15 +367,15 @@ def main() -> None:
                     clusters.append(fp)
             return len(clusters)
 
-        n_wh  = count_unique_by_similarity(result["warhead_smiles"],          args.comp_threshold)
-        n_e3  = count_unique_by_similarity(result["e3_ligase_ligand_smiles"],  args.comp_threshold)
-        n_lnk = count_unique_by_similarity(result["linker_smiles"],            args.comp_threshold)
+        n_wh = count_unique_by_similarity(result["warhead_smiles"], args.comp_threshold)
+        n_e3 = count_unique_by_similarity(result["e3_ligase_ligand_smiles"], args.comp_threshold)
+        n_lnk = count_unique_by_similarity(result["linker_smiles"], args.comp_threshold)
         print(f"  Unique warhead chemotypes  (Tanimoto < {args.comp_threshold:.2f}): {n_wh}")
         print(f"  Unique E3 ligand chemotypes(Tanimoto < {args.comp_threshold:.2f}): {n_e3}")
         print(f"  Unique linker chemotypes   (Tanimoto < {args.comp_threshold:.2f}): {n_lnk}")
 
     sel_mols = [smiles_to_mol(s) for s in result[smi_col]]
-    sel_fps  = [morgan_fp(mol) for mol in sel_mols if mol is not None]
+    sel_fps = [morgan_fp(mol) for mol in sel_mols if mol is not None]
     dists = [
         tanimoto_distance(sel_fps[i], sel_fps[j])
         for i in range(len(sel_fps))
