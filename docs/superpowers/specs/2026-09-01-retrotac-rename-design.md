@@ -97,9 +97,25 @@ Before any edit, load all three final models, predict on a fixed SMILES set, and
 the output to JSON. Every phase replays that comparison. A rename that moves a single
 prediction has failed.
 
-Capture and replay need a GPU allocation. Any xgboost call fails on the Berzelius login
-node, because the wheel probes for a GPU even under `device="cpu"` and the login node
-sets `compute_mode=Prohibited`. Use a SLURM job or `apptainer --nv`.
+Capture and replay run on the login node inside `apptainer/training.sif`. No SLURM
+allocation is needed.
+
+This contradicts CLAUDE.md, which claims any xgboost call fails on the login node
+because the wheel probes for a GPU even under `device="cpu"`. Measured otherwise: all
+three backends load and predict there. The restriction applies to `.fit()`, not to
+inference. Correct CLAUDE.md as part of the documentation phase.
+
+Golden values for `["CCO", "c1ccccc1", "CC(=O)Oc1ccccc1C(=O)O"]` against the
+`20260828_182305` final models:
+
+| Backend | Predictions |
+|---|---|
+| xgb | `0.602399, 0.583112, 0.638612` |
+| mlp | `0.603565, 0.633335, 0.000000` |
+| gnn | `0.360836, 0.651754, 0.667062` |
+
+The mlp's third value is exactly zero. That is the model's current behaviour, not an
+artifact of measurement; the oracle preserves it rather than explaining it.
 
 ## Phases
 
