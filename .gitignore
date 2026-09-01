@@ -277,3 +277,6 @@ apptainer/*.sif
 apptainer/*.sandbox/
 
 backups/
+
+# NFS silly-rename artifacts (held open by live processes, cannot be deleted)
+.nfs*
