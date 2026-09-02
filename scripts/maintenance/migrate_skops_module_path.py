@@ -56,8 +56,8 @@ def migrate(path: Path, dry_run: bool) -> bool:
     return True
 
 
-def revert(path: Path) -> bool:
-    """Restore one archive from its .bak sidecar. True if restored."""
+def revert(path: Path, dry_run: bool = False) -> bool:
+    """Restore one archive from its .bak sidecar. True if restored (or would be, in dry-run)."""
     backup = path.with_suffix(path.suffix + ".bak")
     if not backup.exists():
         return False
@@ -70,7 +70,11 @@ def revert(path: Path) -> bool:
     if OLD not in schema:
         print(f"  SKIP {path}: backup does not predate the migration")
         return False
-    shutil.copy2(backup, path)
+    if dry_run:
+        return True
+    tmp = path.with_suffix(path.suffix + ".revert.tmp")
+    shutil.copy2(backup, tmp)
+    tmp.replace(path)
     return True
 
 
@@ -89,15 +93,18 @@ def main() -> int:
     changed = 0
     for path in files:
         if args.revert:
-            if revert(path):
+            if revert(path, args.dry_run):
                 changed += 1
-                print(f"  reverted {path}")
+                print(f"  {'would revert' if args.dry_run else 'reverted'} {path}")
             continue
         if migrate(path, args.dry_run):
             changed += 1
             print(f"  {'would migrate' if args.dry_run else 'migrated'} {path}")
 
-    verb = "reverted" if args.revert else ("would migrate" if args.dry_run else "migrated")
+    if args.revert:
+        verb = "would revert" if args.dry_run else "reverted"
+    else:
+        verb = "would migrate" if args.dry_run else "migrated"
     print(f"{verb} {changed} of {len(files)} .skops files")
     return 0
 
