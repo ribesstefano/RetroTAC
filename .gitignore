@@ -280,3 +280,5 @@ backups/
 
 # NFS silly-rename artifacts (held open by live processes, cannot be deleted)
 .nfs*
+
+retrotac_staged/
