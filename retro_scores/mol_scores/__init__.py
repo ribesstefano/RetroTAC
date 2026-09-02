@@ -22,7 +22,7 @@ Individual scorers are also importable, e.g.:
 
 Paths to the external scorer repos / checkpoints also live here so there's
 a single place to edit them. Layout assumed (repo root):
-    PROTAC-Synthesizability/
+    RetroTAC/
     ├── retro_scores/mol_scores/   <- this package
     └── external/
         ├── SCScore/                <- git clone CatSci/SCScore
