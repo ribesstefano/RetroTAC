@@ -58,7 +58,7 @@ from retrotac.models.config import ModelsConfig
 from retrotac.models.metrics import compute_all_metrics
 
 # ── paths (anchored to repo root, same as train.py's own defaults) ──────────
-_ROOT           = Path(__file__).parents[3]                 # PROTAC-Synthesizability/
+_ROOT           = Path(__file__).parents[3]                 # RetroTAC/
 DEFAULT_CONFIG  = _ROOT / "config" / "models_config.yaml"
 DEFAULT_OUTPUT_ROOT = _ROOT / "data" / "outputs"
 
