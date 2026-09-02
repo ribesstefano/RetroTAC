@@ -20,7 +20,7 @@ mamba activate env-retrotac
 
 export UV_CACHE_DIR="/proj/berzelius-2026-62/users/x_steri/.cache"
 
-cd /proj/berzelius-2026-62/users/x_steri/PROTAC-Synthesizability
+cd /proj/berzelius-2026-62/users/x_steri/RetroTAC
 
 echo "Job started : $(date)"
 echo "Node        : $SLURMD_NODENAME"
