@@ -506,7 +506,7 @@ def scaffold_train_test_split(
 # ── pandas / tqdm utility ─────────────────────────────────────────────────────
 
 
-def papply(series: pd.Series, func: Any, desc: str) -> pd.Series:
+def papply(series: pd.Series, func: Any, desc: str, n_jobs: int = 1) -> pd.Series:
     """Apply *func* to *series* with a labelled tqdm progress bar.
 
     tqdm.pandas() registers ``progress_apply`` on pd.Series but forwards all
@@ -517,11 +517,33 @@ def papply(series: pd.Series, func: Any, desc: str) -> pd.Series:
 
     Args:
         series: pandas Series to transform.
-        func: Callable applied element-wise.
+        func: Callable applied element-wise. Must be a module-level function
+            (picklable by reference) when n_jobs != 1, since it is shipped to
+            worker processes -- a lambda or closure will fail to pickle.
         desc: Progress bar label shown in the terminal.
+        n_jobs: 1 (default) applies sequentially in-process, unchanged from
+            before this parameter existed. Any other value runs func over
+            series in a ProcessPoolExecutor instead -- worth it for
+            RDKit-heavy functions (std_smiles, canon_smiles, ...) over
+            datasets of ~1e5+ rows, where per-call C++ overhead dominates and
+            multiprocessing gives a near-linear speedup; not worth the
+            process-startup/IPC cost for small series. -1 uses one worker per
+            CPU (os.cpu_count()); any positive value is used as-is.
 
     Returns:
         Transformed Series with the same index as *series*.
     """
-    tqdm.pandas(desc=desc)
-    return series.progress_apply(func)
+    if n_jobs == 1:
+        tqdm.pandas(desc=desc)
+        return series.progress_apply(func)
+
+    import os
+    from concurrent.futures import ProcessPoolExecutor
+
+    workers = os.cpu_count() or 1 if n_jobs < 0 else n_jobs
+    chunksize = max(1, len(series) // (workers * 4))
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        results = list(
+            tqdm(ex.map(func, series, chunksize=chunksize), total=len(series), desc=desc)
+        )
+    return pd.Series(results, index=series.index)
