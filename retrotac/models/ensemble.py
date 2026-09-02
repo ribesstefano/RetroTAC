@@ -12,6 +12,7 @@ ensemble_strategies.csv reports.
 """
 import json
 import logging
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -22,6 +23,23 @@ from tqdm import tqdm
 from retrotac.models.loading import compute_features, load_backend
 
 logger = logging.getLogger(__name__)
+
+# Silence PyTorch Lightning's rank_zero_info banners ("GPU available: ...",
+# litlogger/litmodels upsell tips) and its "does not have many workers"
+# PossibleUserWarning plus torch's internal LeafSpec deprecation warning --
+# both fire once per GNN ensemble member loaded/predicted (see gnn/model.py's
+# CheMeleonRegressor.load/predict) and are pure noise for inference. Import
+# lightning.pytorch here (retrotac.models already pulls in torch/lightning
+# eagerly regardless of backend, see retrotac/models/__init__.py) so its
+# own import-time logger setup runs before -- not after -- we override the
+# level, rather than relying on retrotac.models.loading's lazy per-backend
+# imports to have already run it.
+import lightning.pytorch  # noqa: F401,E402
+
+for _lightning_logger in ("lightning", "lightning.pytorch", "lightning.fabric", "pytorch_lightning"):
+    logging.getLogger(_lightning_logger).setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message=r".*does not have many workers.*")
+warnings.filterwarnings("ignore", message=r".*LeafSpec.*")
 
 MANIFEST_FILENAME = "ensemble.json"
 CONFIG_FILENAME = "config.json"
