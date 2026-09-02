@@ -109,7 +109,7 @@ class CheMeleonRegressor:
         pl.seed_everything(self.random_state, workers=True)
 
         p = self.gnn_params
-        dropout = p.get("dropout", 0.0)
+        dropout = p.get("dropout", 0.1)
         ffn_hidden = p.get("ffn_hidden_dim", 300)
         ffn_layers = p.get("ffn_n_layers", 1)
         max_lr = p.get("max_lr", 1e-3)
@@ -208,6 +208,7 @@ class CheMeleonRegressor:
         smiles_list: List[str],
         X_fp: Optional[np.ndarray] = None,
         X_desc: Optional[np.ndarray] = None,
+        batch_size: int = 64,
     ) -> np.ndarray:
         """Predict targets for SMILES not seen during fit().
 
@@ -215,6 +216,14 @@ class CheMeleonRegressor:
             smiles_list: SMILES strings to predict on.
             X_fp: Ignored; accepted for signature parity with tabular models.
             X_desc: Ignored; accepted for signature parity with tabular models.
+            batch_size: Molecules per GPU forward pass, forwarded to
+                chemprop's build_dataloader. Previously hardcoded to
+                chemprop's own default (64, still the default here) by
+                omission -- entirely decoupled from any outer batching a
+                caller does over smiles_list. Raising it (e.g. 256-512;
+                watch GPU memory, since D-MPNN batch cost scales with total
+                atoms/bonds, not molecule count) is the actual lever for
+                GPU utilization during inference.
 
         Returns:
             Array of shape [len(smiles_list), n_targets] in real (unscaled)
@@ -223,7 +232,7 @@ class CheMeleonRegressor:
         """
         featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
         dset = cpdata.MoleculeDataset(self._datapoints(smiles_list), featurizer)
-        loader = cpdata.build_dataloader(dset, num_workers=0, shuffle=False)
+        loader = cpdata.build_dataloader(dset, batch_size=batch_size, num_workers=0, shuffle=False)
         preds = self.trainer_.predict(self.model_, loader)  # list of [batch, n_targets]
         return torch.cat(preds).numpy()  # already unscaled
 

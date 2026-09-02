@@ -223,7 +223,13 @@ class RetroTAC:
         )
 
     def predict(
-        self, smiles_list: List[str], return_details: bool = False
+        self,
+        smiles_list: List[str],
+        return_details: bool = False,
+        X_fp: Optional[np.ndarray] = None,
+        X_desc: Optional[np.ndarray] = None,
+        n_jobs: int = 1,
+        gnn_batch_size: int = 64,
     ) -> Union[np.ndarray, Dict[str, Any]]:
         """Predict synthesizability as the Caruana-weighted mean over members.
 
@@ -236,6 +242,24 @@ class RetroTAC:
             smiles_list: SMILES strings to score.
             return_details: If True, return a dict with the per-member
                 spread and raw predictions instead of just the mean.
+            X_fp: Precomputed fingerprint matrix aligned with smiles_list
+                (e.g. via retrotac.chem_utils.compute_fingerprints, batched
+                or fanned out through papply); computed from smiles_list
+                when omitted.
+            X_desc: Precomputed descriptor matrix aligned with smiles_list
+                (e.g. via retrotac.chem_utils.compute_descriptors); computed
+                from smiles_list when omitted.
+            n_jobs: Parallelism forwarded to retrotac.chem_utils.papply for each
+                standardize/parse/featurize step; 1 (default) runs sequentially
+                in-process. See papply's own docstring for the -1/positive-int
+                semantics.
+            gnn_batch_size: Molecules per GPU forward pass, forwarded only to
+                gnn members (see CheMeleonRegressor.predict's own
+                batch_size); xgb/mlp members ignore it and always predict the
+                whole smiles_list in one call. Defaults to chemprop's own
+                default (64); raise it (e.g. 256-512, watch GPU memory) to
+                better utilize the GPU per RetroTAC.predict() call,
+                independent of how many molecules the caller passes in.
 
         Returns:
             If return_details=False (default): a 1-D np.ndarray of shape
@@ -251,19 +275,26 @@ class RetroTAC:
                 "members": {model name: 1-D np.ndarray}, every member's raw
                     prediction.
         """
-        X_fp, X_desc = compute_features(
-            smiles_list,
-            self._feature_config["fp_size"],
-            self._feature_config["fp_radius"],
-            self._feature_config.get("use_fingerprints", True),
-            self._feature_config.get("use_descriptors", True),
-        )
+        if X_fp is None or X_desc is None:
+            computed_fp, computed_desc = compute_features(
+                smiles_list,
+                fp_size=self._feature_config["fp_size"],
+                fp_radius=self._feature_config["fp_radius"],
+                use_fingerprints=self._feature_config.get("use_fingerprints", True) and X_fp is None,
+                use_descriptors=self._feature_config.get("use_descriptors", True) and X_desc is None,
+                n_jobs=n_jobs,
+            )
+            X_fp = computed_fp if X_fp is None else X_fp
+            X_desc = computed_desc if X_desc is None else X_desc
 
         member_preds: Dict[str, np.ndarray] = {}
         mean = np.zeros(len(smiles_list), dtype=float)
         for name, weight in tqdm(self._weights.items(), desc="Ensemble members", unit="model"):
             model = self._get_member(name)
-            y_pred = model.predict(smiles_list, X_fp=X_fp, X_desc=X_desc)
+            if self._member_specs[name]["backend"] == "gnn":
+                y_pred = model.predict(smiles_list, X_fp=X_fp, X_desc=X_desc, batch_size=gnn_batch_size)
+            else:
+                y_pred = model.predict(smiles_list, X_fp=X_fp, X_desc=X_desc)
             y_pred = np.asarray(y_pred, dtype=float).reshape(-1)
             member_preds[name] = y_pred
             mean += weight * y_pred
