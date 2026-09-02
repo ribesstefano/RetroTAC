@@ -15,4 +15,6 @@ cd $SLURM_SUBMIT_DIR
 
 apptainer exec --nv $(bash apptainer/bind_live_repo.sh) apptainer/inference.sif \
   python scripts/negative_data/predict_synthetic_data.py \
-  --n-jobs $SLURM_CPUS_PER_TASK
+  --n-jobs $SLURM_CPUS_PER_TASK \
+  --batch-size 4096 \
+  --gnn-batch-size 256

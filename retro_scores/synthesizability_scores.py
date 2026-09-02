@@ -36,6 +36,15 @@ def parse_args():
                         help="Name of the SMILES column (default: molecule)")
     parser.add_argument("--keep-all-columns", action="store_true",
                         help="Keep the original input columns in the output too")
+    parser.add_argument("--device", default="auto",
+                        help="Compute device for FSscore's Lightning trainer (default: auto, which "
+                             "grabs a GPU if one is visible -- crashes on a login node that has a "
+                             "GPU it cannot use; pass cpu there). Only FSscore uses this.")
+    parser.add_argument("--batch-size", type=int, default=128,
+                        help="Molecules per forward pass for FSscore (default: 128). Only FSscore "
+                             "batches; every other score is unaffected.")
+    parser.add_argument("--num-workers", type=int, default=4,
+                        help="Dataloader worker processes for FSscore (default: 4).")
     return parser.parse_args()
 
 
@@ -47,7 +56,10 @@ def main():
         sys.exit(f"ERROR: column '{args.smiles_col}' not found in {args.input_csv}. "
                  f"Available columns: {list(df.columns)}")
 
-    df = compute_scores(df, smiles_col=args.smiles_col)
+    df = compute_scores(
+        df, smiles_col=args.smiles_col,
+        device=args.device, batch_size=args.batch_size, num_workers=args.num_workers,
+    )
 
     if args.keep_all_columns:
         out_cols = list(df.columns)

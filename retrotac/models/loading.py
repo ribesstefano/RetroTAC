@@ -10,9 +10,11 @@ the ensemble's Caruana weights were fit against (see
 scripts/models/evaluation.py's predict_fold_models / run_ensemble_strategies).
 """
 import re
+from functools import partial
 from typing import Any, List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 
 _FOLD_MODEL_NAME_RE = re.compile(r"^([A-Za-z]+)_seed(\d+)_fold(\d+)$")
 
@@ -50,6 +52,7 @@ def compute_features(
     fp_radius: int,
     use_fingerprints: bool = True,
     use_descriptors: bool = True,
+    n_jobs: int = 1,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     """Standardize SMILES and compute the model input features.
 
@@ -59,16 +62,42 @@ def compute_features(
         fp_radius: Morgan fingerprint bond-hop radius.
         use_fingerprints: Whether to compute the fingerprint block.
         use_descriptors: Whether to compute the RDKit descriptor block.
+        n_jobs: Parallelism forwarded to retrotac.chem_utils.papply for each
+            standardize/parse/featurize step; 1 (default) runs sequentially
+            in-process. See papply's own docstring for the -1/positive-int
+            semantics.
 
     Returns:
         Tuple of (fingerprints, descriptors); either is None when its
         corresponding use_* flag is False.
     """
-    from retrotac.chem_utils import compute_descriptors, compute_fingerprints, standardize_all
+    from retrotac.chem_utils import (
+        compute_descriptors,
+        compute_fingerprints,
+        papply,
+        smiles_to_mol,
+        std_smiles,
+    )
 
-    mols = standardize_all(smiles_list)
-    X_fp = compute_fingerprints(mols, fp_size, fp_radius) if use_fingerprints else None
-    X_desc = compute_descriptors(mols) if use_descriptors else None
+    smiles_series = pd.Series(smiles_list)
+    std_series = papply(smiles_series, std_smiles, desc="Standardizing SMILES", n_jobs=n_jobs)
+    mols = papply(std_series, smiles_to_mol, desc="Parsing molecules", n_jobs=n_jobs)
+
+    X_fp = None
+    if use_fingerprints:
+        fp_series = papply(
+            mols,
+            partial(compute_fingerprints, fp_size=fp_size, fp_radius=fp_radius),
+            desc="Computing fingerprints",
+            n_jobs=n_jobs,
+        )
+        X_fp = np.vstack(fp_series.tolist())
+
+    X_desc = None
+    if use_descriptors:
+        desc_series = papply(mols, compute_descriptors, desc="Computing descriptors", n_jobs=n_jobs)
+        X_desc = np.vstack(desc_series.tolist())
+
     return X_fp, X_desc
 
 

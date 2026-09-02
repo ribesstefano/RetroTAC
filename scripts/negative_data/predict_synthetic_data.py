@@ -12,6 +12,14 @@ candidates, then scores the remainder with `retrotac.models.ensemble.RetroTAC`
 incrementally so a crash only loses at most one --batch-size worth of work,
 and a rerun resumes automatically by skipping molecules already scored.
 
+The standardized, train-overlap-removed dataframe that scoring actually
+consumes is itself dumped to --output-dir/synthetic_standardized.csv (the
+removed overlapping rows go to --output-dir/synthetic_train_overlap.csv, for
+audit); a rerun loads synthetic_standardized.csv instead of redoing loading/
+standardization/overlap-removal when it's already there (pass
+--recompute-prepared to force redoing it, e.g. after --data-dir/--train-csv
+change).
+
 Two "interesting" subsets are isolated from the tails of the prediction
 distribution: confident extreme predictions (low ensemble uncertainty --
 likely-correct hard positives/negatives, candidates for negative-data mining)
@@ -36,7 +44,7 @@ import argparse
 import json
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import pandas as pd
 import torch
@@ -100,8 +108,8 @@ def load_synthetic_data(
 
 def remove_train_data(
     df: pd.DataFrame, train_df: pd.DataFrame, train_smiles_col: str = "smiles", n_jobs: int = 1
-) -> pd.DataFrame:
-    """Drop synthetic rows whose PROTAC SMILES also appears in the training set.
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Split synthetic rows by whether their PROTAC SMILES also appears in the training set.
 
     Args:
         df: Synthetic dataset, standardized (see load_synthetic_data), with a
@@ -113,7 +121,9 @@ def remove_train_data(
             docstring (1 = sequential, -1 = one worker per CPU).
 
     Returns:
-        df filtered to rows not present (by standardized SMILES) in train_df.
+        (kept, overlap): kept is df filtered to rows not present (by
+        standardized SMILES) in train_df; overlap is the complementary rows
+        that were removed, for inspection/audit.
     """
     train_smiles = set(
         papply(
@@ -122,13 +132,21 @@ def remove_train_data(
     )
 
     before = len(df)
-    filtered = df[~df[PROTAC_COL].isin(train_smiles)].reset_index(drop=True)
-    print(f"  removed {before - len(filtered):,}/{before:,} rows overlapping with the training set")
-    return filtered
+    mask = df[PROTAC_COL].isin(train_smiles)
+    overlap = df[mask].reset_index(drop=True)
+    kept = df[~mask].reset_index(drop=True)
+    print(f"  removed {len(overlap):,}/{before:,} rows overlapping with the training set")
+    return kept, overlap
 
 
 def get_predictions(
-    df: pd.DataFrame, model: "RetroTAC", batch_size: int, outdir: Path, resume: bool = True
+    df: pd.DataFrame,
+    model: "RetroTAC",
+    batch_size: int,
+    outdir: Path,
+    resume: bool = True,
+    n_jobs: int = 1,
+    gnn_batch_size: int = 64,
 ) -> pd.DataFrame:
     """Score df's PROTAC SMILES with model, checkpointing after every batch.
 
@@ -144,6 +162,14 @@ def get_predictions(
         outdir: Directory to write predictions.csv to (created if missing).
         resume: If True and outdir/"predictions.csv" exists, skip molecules
             already present in it. If False, any existing file is discarded.
+        n_jobs: Forwarded to RetroTAC.predict() for its internal SMILES
+            standardize/parse/featurize steps; see papply's docstring
+            (1 = sequential, -1 = one worker per CPU).
+        gnn_batch_size: Forwarded to RetroTAC.predict() as the gnn members'
+            own GPU forward-pass batch size (see RetroTAC.predict's
+            docstring) -- independent of batch_size above, which only
+            controls how many molecules are featurized/checkpointed per
+            call.
 
     Returns:
         df with "prediction" (Caruana-weighted mean) and "uncertainty"
@@ -169,7 +195,12 @@ def get_predictions(
     for i in range(n_batches):
         print(f"  batch {i + 1}/{n_batches}")
         batch = todo.iloc[i * batch_size:(i + 1) * batch_size].copy()
-        result = model.predict(batch[PROTAC_COL].tolist(), return_details=True)
+        result = model.predict(
+            batch[PROTAC_COL].tolist(),
+            return_details=True,
+            n_jobs=n_jobs,
+            gnn_batch_size=gnn_batch_size,
+        )
         batch["prediction"] = result["mean"]
         batch["uncertainty"] = result["std"]
         batch.to_csv(out_path, mode="a", header=write_header, index=False)
@@ -362,10 +393,17 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--device", default=None,
                      help="compute device for the gnn ensemble members; default: cuda if available, else cpu")
     ap.add_argument("--batch-size", type=int, default=512, help="molecules per predict()/checkpoint")
+    ap.add_argument("--gnn-batch-size", type=int, default=64,
+                     help="molecules per GPU forward pass for the gnn ensemble members (chemprop's "
+                          "own minibatch, independent of --batch-size); raise (e.g. 256-512, watch "
+                          "GPU memory) for better GPU utilization")
     ap.add_argument("--output-dir", type=Path, default=Path("outputs/negative_data"),
                      help="directory to write predictions, summary, plots, and isolated subsets to")
     ap.add_argument("--no-resume", dest="resume", action="store_false",
                      help="ignore any existing predictions.csv and rescore everything")
+    ap.add_argument("--recompute-prepared", action="store_true",
+                     help="ignore any existing synthetic_standardized.csv and redo loading/"
+                          "standardization/train-overlap removal from scratch")
     ap.add_argument("--pct-tail", type=float, default=0.1,
                      help="fraction of each tail of the prediction distribution to isolate")
     ap.add_argument("--uncertainty-threshold", type=float, default=None,
@@ -381,12 +419,25 @@ def main() -> None:
     device = resolve_device(args.device)
     print(f"Using device={device!r} for gnn ensemble members")
 
-    print(f"Loading synthetic data from {args.data_dir} (pattern={args.pattern!r})...")
-    df = load_synthetic_data(args.data_dir, args.pattern, n_jobs=args.n_jobs)
+    prepared_path = args.output_dir / "synthetic_standardized.csv"
+    overlap_path = args.output_dir / "synthetic_train_overlap.csv"
 
-    print(f"Removing rows overlapping with {args.train_csv}...")
-    train_df = pd.read_csv(args.train_csv, usecols=[args.train_smiles_col])
-    df = remove_train_data(df, train_df, args.train_smiles_col, n_jobs=args.n_jobs)
+    if prepared_path.exists() and not args.recompute_prepared:
+        print(f"Loading previously standardized synthetic data from {prepared_path}...")
+        df = pd.read_csv(prepared_path)
+        print(f"  {len(df):,} rows loaded")
+    else:
+        print(f"Loading synthetic data from {args.data_dir} (pattern={args.pattern!r})...")
+        df = load_synthetic_data(args.data_dir, args.pattern, n_jobs=args.n_jobs)
+
+        print(f"Removing rows overlapping with {args.train_csv}...")
+        train_df = pd.read_csv(args.train_csv, usecols=[args.train_smiles_col])
+        df, overlap = remove_train_data(df, train_df, args.train_smiles_col, n_jobs=args.n_jobs)
+
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        df.to_csv(prepared_path, index=False)
+        overlap.to_csv(overlap_path, index=False)
+        print(f"  wrote {prepared_path} ({len(df):,} rows) and {overlap_path} ({len(overlap):,} rows)")
 
     if args.limit is not None:
         df = df.head(args.limit).reset_index(drop=True)
@@ -400,7 +451,10 @@ def main() -> None:
     )
 
     print(f"Scoring {len(df):,} molecules in batches of {args.batch_size}...")
-    df = get_predictions(df, model, args.batch_size, args.output_dir, resume=args.resume)
+    df = get_predictions(
+        df, model, args.batch_size, args.output_dir,
+        resume=args.resume, n_jobs=args.n_jobs, gnn_batch_size=args.gnn_batch_size,
+    )
 
     print("Writing predictions summary...")
     predictions_summary(df, args.output_dir)

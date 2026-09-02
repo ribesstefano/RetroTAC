@@ -310,55 +310,77 @@ DESCRIPTOR_CALCULATOR = MoleculeDescriptors.MolecularDescriptorCalculator(
 
 
 def compute_fingerprints(
-    mols: List[Any], fp_size: int = 512, fp_radius: int = 3
+    mols: Any | List[Any], fp_size: int = 512, fp_radius: int = 3
 ) -> np.ndarray:
-    """Compute Morgan fingerprints for pre-standardized Mols.
+    """Compute Morgan fingerprint(s) for pre-standardized Mol(s).
+
+    Accepts either a single Mol (or None) -- e.g. for per-row use with
+    ``papply``, which calls this function element-by-element -- or an
+    iterable of Mols (e.g. from ``standardize_all``).
 
     Args:
-        mols: RDKit Mols (e.g. from ``standardize_all``); None entries allowed.
+        mols: A single RDKit Mol (or None), or an iterable of them; None
+            entries in an iterable are allowed.
         fp_size: Folded bit-vector length.
         fp_radius: Bond-hop radius from each heavy atom center.
 
     Returns:
-        Float32 array of shape [len(mols), fp_size]; a zero row for None mols.
+        Float32 array of shape [fp_size] for a single-Mol input, or
+        [len(mols), fp_size] for an iterable input; zero row(s) for None mols.
     """
     gen = rdFingerprintGenerator.GetMorganGenerator(
         radius=fp_radius, fpSize=fp_size, includeChirality=True
     )
-    fps = []
-    for mol in tqdm(mols, desc="Computing fingerprints", unit="mol"):
+
+    def _fingerprint(mol: Any) -> np.ndarray:
         if mol is None:
-            fps.append(np.zeros(fp_size, dtype=np.float32))
-        else:
-            fps.append(gen.GetFingerprintAsNumPy(Chem.AddHs(mol)).astype(np.float32))
-    return np.vstack(fps)
+            return np.zeros(fp_size, dtype=np.float32)
+        return gen.GetFingerprintAsNumPy(Chem.AddHs(mol)).astype(np.float32)
+
+    if mols is None or isinstance(mols, Chem.Mol):
+        return _fingerprint(mols)
+
+    return np.vstack(
+        [_fingerprint(mol) for mol in tqdm(mols, desc="Computing fingerprints", unit="mol")]
+    )
 
 
 def compute_descriptors(
-    mols: List[Any],
+    mols: Any | List[Any],
     calculator: Any = DESCRIPTOR_CALCULATOR,
     n_desc: int = len(DESCRIPTOR_NAMES),
 ) -> np.ndarray:
-    """Compute RDKit descriptors for pre-standardized Mols.
+    """Compute RDKit descriptors for pre-standardized Mol(s).
+
+    Accepts either a single Mol (or None) -- e.g. for per-row use with
+    ``papply``, which calls this function element-by-element -- or an
+    iterable of Mols (e.g. from ``standardize_all``).
 
     Args:
-        mols: RDKit Mols (e.g. from ``standardize_all``); None entries allowed.
+        mols: A single RDKit Mol (or None), or an iterable of them; None
+            entries in an iterable are allowed.
         calculator: RDKit descriptor calculator. Defaults to the full RDKit set.
         n_desc: Number of descriptors *calculator* produces (row width for NaN rows).
 
     Returns:
-        Float32 array of shape [len(mols), n_desc]; a NaN row for None mols.
+        Float32 array of shape [n_desc] for a single-Mol input, or
+        [len(mols), n_desc] for an iterable input; NaN row(s) for None mols.
     """
-    rows = []
-    for mol in tqdm(mols, desc="Computing descriptors", unit="mol"):
+
+    def _descriptors(mol: Any) -> np.ndarray:
         if mol is None:
-            rows.append(np.full(n_desc, np.nan, dtype=np.float32))
-        else:
-            vals = np.clip(
-                np.array(calculator.CalcDescriptors(mol), dtype=np.float64), -1e4, 1e4
-            )
-            rows.append(vals.astype(np.float32))
-    return np.vstack(rows)
+            return np.full(n_desc, np.nan, dtype=np.float32)
+        vals = np.clip(
+            np.array(calculator.CalcDescriptors(mol), dtype=np.float64), -1e4, 1e4
+        )
+        return vals.astype(np.float32)
+
+    if mols is None or isinstance(mols, Chem.Mol):
+        return _descriptors(mols)
+
+    return np.vstack(
+        [_descriptors(mol) for mol in tqdm(mols, desc="Computing descriptors", unit="mol")]
+    )
 
 
 def sanitize_matrix(X: np.ndarray) -> np.ndarray:
