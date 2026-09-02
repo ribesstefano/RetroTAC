@@ -30,7 +30,7 @@ from sklearn.pipeline import Pipeline as SkPipeline
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 
-from protac_synth.descriptor_names import DESCRIPTOR_NAMES
+from retrotac.descriptor_names import DESCRIPTOR_NAMES
 
 RDLogger.DisableLog("rdApp.*")
 

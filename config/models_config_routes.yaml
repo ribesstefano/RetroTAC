@@ -14,7 +14,7 @@ cross_validation:
   n_folds: 5
 
 tracking:
-  wandb_project: protac-synth
+  wandb_project: retrotac
   study_prefix: routes
 
 torch:                   # for the MLP/GNN later

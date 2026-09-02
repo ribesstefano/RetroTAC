@@ -18,7 +18,7 @@ from typing import List, Union
 
 import yaml
 
-from protac_synth.models.metrics import DEFAULT_CLF_THRESHOLD, DEFAULT_OBJECTIVE_ALPHA
+from retrotac.models.metrics import DEFAULT_CLF_THRESHOLD, DEFAULT_OBJECTIVE_ALPHA
 
 
 @dataclass(frozen=True)
@@ -52,7 +52,7 @@ class HPOConfig:
     """Inner-loop tuning + reporting knobs (YAML section `hpo`, all optional).
 
     `objective_alpha` weights RMSE against the Spearman rank penalty in the
-    composite Optuna objective (see protac_synth.models.metrics.hpo_objective);
+    composite Optuna objective (see retrotac.models.metrics.hpo_objective);
     `classification_threshold` is the cut used to also report the folds as a
     binary problem.
     """

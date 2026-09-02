@@ -2,13 +2,13 @@
 
 This document describes how to rebuild the environment for the synthesizability
 scoring pipeline (`retro_scores/`, a standalone package installed separately
-from the main `src/protac_synth/` codebase — see "Why separate?" below). The
+from the main `src/retrotac/` codebase — see "Why separate?" below). The
 pipeline computes six scores per molecule — SA score, SCScore, RAscore, SYBA,
 GASA, and FSscore — each with a raw and a scaled value.
 
 ### Why separate?
 
-`src/protac_synth/` (installed via `uv sync`, Python 3.12) trains and runs
+`src/retrotac/` (installed via `uv sync`, Python 3.12) trains and runs
 inference for the surrogate model. This scoring pipeline needs a completely
 different, fragile stack (TF 2.8 + torch 2.0 + dgl 2.1 + old xgboost, Python
 3.10) that has nothing to do with that. Keeping it in its own package with
@@ -205,12 +205,12 @@ external/fsscore/models/pretrain_graph_GGLGGL_ep242_best_valloss.ckpt
 ## 4. Install this package (editable)
 
 `retro_scores/` is a standalone project with its own `pyproject.toml` — it
-does not depend on `protac_synth` or the main repo's `pyproject.toml` at all,
+does not depend on `retrotac` or the main repo's `pyproject.toml` at all,
 so installing it never touches the main Python-3.12 environment. It provides
 two importable packages: `mol_scores` (the six scorers above, what this doc
 is about) and `route_scores` (AiZynthFinder-route-based scoring, e.g. the
 HAC-weighted score — needs `aizynthfinder`, so it's meant for the main
-`protac_synth` environment rather than `scoring_env`; see its own module
+`retrotac` environment rather than `scoring_env`; see its own module
 docstring).
 
 ```bash

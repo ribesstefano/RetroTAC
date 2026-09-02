@@ -5,7 +5,7 @@ Shared AiZynthFinder helpers used by both the component-scoring and
 PROTAC-scoring retrosynthesis scripts.
 
 Callers must have the repo root on ``sys.path`` before importing (not just
-``src/``) — ``init_finder`` reaches across to ``src.protac_synth.stock_utils``,
+``src/``) — ``init_finder`` reaches across to ``src.retrotac.stock_utils``,
 which is an implicit namespace package rooted one level above ``src/``.
 """
 
@@ -182,7 +182,7 @@ def init_finder(
     # (CUDA device scan, kernel JIT), which can take 10-30 s.  Keeping them here
     # means --help and bad-argument errors complete instantly.
     from aizynthfinder.aizynthfinder import AiZynthFinder
-    from src.protac_synth.stock_utils.sqlite_stock import SQLiteStock
+    from src.retrotac.stock_utils.sqlite_stock import SQLiteStock
 
     logger.info("Initialising AiZynthFinder from config: %s", config_path)
     finder = AiZynthFinder(configfile=str(config_path))

@@ -2,7 +2,7 @@ Bootstrap: docker
 From: ubuntu:22.04
 
 # Default profile: everything a regular user needs to run a saved XGB/MLP/GNN
-# surrogate model (protac_synth core deps -- no training or scoring extras)
+# surrogate model (retrotac core deps -- no training or scoring extras)
 # plus `notebooks` (jupyter/jupyterlab/ipywidgets) for interactive use -- see
 # the `notebook` app below and apptainer/README.md, "Developing against a
 # container". See apptainer/README.md for the general recipe this follows.
@@ -10,7 +10,7 @@ From: ubuntu:22.04
 %files
     pyproject.toml /opt/repo/pyproject.toml
     uv.lock /opt/repo/uv.lock
-    protac_synth /opt/repo/protac_synth
+    retrotac /opt/repo/retrotac
     scripts /opt/repo/scripts
     config /opt/repo/config
 

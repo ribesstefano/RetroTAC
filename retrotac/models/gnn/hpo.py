@@ -8,7 +8,7 @@ from typing import Any, List, Optional
 
 import numpy as np
 
-from protac_synth.models.gnn.model import CheMeleonRegressor
+from retrotac.models.gnn.model import CheMeleonRegressor
 
 
 def build_gnn(

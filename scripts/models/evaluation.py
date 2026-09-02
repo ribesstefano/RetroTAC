@@ -8,7 +8,7 @@ consumes. Final-model test predictions/metrics are cached to
 `{out}/test_predictions.pkl` / `test_metrics.csv` and reused on rerun (pass
 `--force-recompute` to redo).
 
-Every metric written per fold by train.py (see protac_synth.models.metrics
+Every metric written per fold by train.py (see retrotac.models.metrics
 .compute_all_metrics) is loaded and reported, not just R2:
     {CV_DIR}/{prefix}/score_seed{seed}_fold{fold}.json
         -> {"seed", "fold_idx", "r2", "rmse", ..., "clf_*", "n_samples", "objective", ...}
@@ -54,11 +54,11 @@ from sklearn.metrics import log_loss, mean_squared_error, r2_score, roc_auc_scor
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))   # -> chem_utils
 
-from protac_synth.models.config import ModelsConfig
-from protac_synth.models.metrics import compute_all_metrics
+from retrotac.models.config import ModelsConfig
+from retrotac.models.metrics import compute_all_metrics
 
 # ── paths (anchored to repo root, same as train.py's own defaults) ──────────
-_ROOT           = Path(__file__).parents[3]                 # PROTAC-Synthesizability/
+_ROOT           = Path(__file__).parents[3]                 # RetroTAC/
 DEFAULT_CONFIG  = _ROOT / "config" / "models_config.yaml"
 DEFAULT_OUTPUT_ROOT = _ROOT / "data" / "outputs"
 
@@ -329,13 +329,13 @@ def _load_model_from_path(prefix: str, base: str) -> Any:
     """
     kind = prefix.split("_")[0]
     if kind == "xgb":
-        from protac_synth.models.xgb.model import XGBoostRegressor
+        from retrotac.models.xgb.model import XGBoostRegressor
         return XGBoostRegressor.load(base)
     if kind == "mlp":
-        from protac_synth.models.mlp.model import TorchMLPRegressor
+        from retrotac.models.mlp.model import TorchMLPRegressor
         return TorchMLPRegressor.load(base)
     if kind == "gnn":
-        from protac_synth.models.gnn.model import CheMeleonRegressor
+        from retrotac.models.gnn.model import CheMeleonRegressor
         return CheMeleonRegressor.load(base)
     raise ValueError(f"Unknown model kind: {kind}")
 
@@ -365,7 +365,7 @@ def _test_features(smiles: List[str], cfg: ModelsConfig) -> Tuple[Optional[np.nd
         Tuple of (fingerprints, descriptors); either may be None if disabled
         via the config's features.use_fingerprints / use_descriptors.
     """
-    from protac_synth.chem_utils import compute_descriptors, compute_fingerprints, standardize_all
+    from retrotac.chem_utils import compute_descriptors, compute_fingerprints, standardize_all
     mols   = standardize_all(smiles)
     X_fp   = compute_fingerprints(mols, cfg.features.fp_size, cfg.features.fp_radius) if cfg.features.use_fingerprints else None
     X_desc = compute_descriptors(mols) if cfg.features.use_descriptors else None

@@ -4,9 +4,9 @@
 #   bash train_5x5.sh xgb data/processed/surrogate_model/full_dataset_fp_r5_512.csv myprefix
 #
 # smoke-test ONE fold interactively first (catches path/column/env errors fast):
-#   module load Miniforge3/24.7.1-2-hpc1-bdist && mamba activate protac_synth
-#   python src/protac_synth/models/train.py --model xgb \
-#       --input src/protac_synth/protac_synth_data.csv \
+#   module load Miniforge3/24.7.1-2-hpc1-bdist && mamba activate retrotac
+#   python src/retrotac/models/train.py --model xgb \
+#       --input src/retrotac/retrotac_data.csv \
 #       --seed 0 --fold 0 --prefix testrun --n_trials 3
  
 set -euo pipefail
@@ -14,7 +14,7 @@ module --force purge
 # load the env so the YAML-reading python one-liner below can import yaml
 module load Miniforge3/24.7.1-2-hpc1-bdist
 set +u                       
-mamba activate protac_synth
+mamba activate retrotac
 set -u
  
 MODEL=$1
@@ -22,7 +22,7 @@ INPUT_PATH=$2
 PREFIX=${3:-"default"}
 N_TRIALS=${4:-25}
  
-CONFIG=PROTAC-Synthesizability/src/protac_synth/models/models_config.yaml
+CONFIG=PROTAC-Synthesizability/src/retrotac/models/models_config.yaml
 
 LOG_DIR=logs/${MODEL}/${PREFIX}
  
@@ -49,9 +49,9 @@ if [ "$MODEL" != "gnn" ]; then
  
 module --force purge
 module load Miniforge3/24.7.1-2-hpc1-bdist
-mamba activate protac_synth
+mamba activate retrotac
 
-python PROTAC-Synthesizability/src/protac_synth/models/train.py --model $MODEL --input $INPUT_PATH --precompute
+python PROTAC-Synthesizability/src/retrotac/models/train.py --model $MODEL --input $INPUT_PATH --precompute
 EOF
 )
     echo "submitted precompute job $PRECOMPUTE_ID"
@@ -76,9 +76,9 @@ for SEED_IDX in $SEEDS; do
  
 module --force purge
 module load Miniforge3/24.7.1-2-hpc1-bdist
-mamba activate protac_synth
+mamba activate retrotac
  
-python PROTAC-Synthesizability/src/protac_synth/models/train.py --model $MODEL --input $INPUT_PATH --seed $SEED_IDX --fold $FOLD_IDX --prefix $PREFIX --n_trials $N_TRIALS
+python PROTAC-Synthesizability/src/retrotac/models/train.py --model $MODEL --input $INPUT_PATH --seed $SEED_IDX --fold $FOLD_IDX --prefix $PREFIX --n_trials $N_TRIALS
 EOF
 )
         FOLD_JOB_IDS+=("$JID")
@@ -102,7 +102,7 @@ sbatch --dependency=afterok:$DEP <<EOF
  
 module --force purge
 module load Miniforge3/24.7.1-2-hpc1-bdist
-mamba activate protac_synth
+mamba activate retrotac
  
-python PROTAC-Synthesizability/src/protac_synth/models/train.py --model $MODEL --input $INPUT_PATH --aggregate --prefix $PREFIX
+python PROTAC-Synthesizability/src/retrotac/models/train.py --model $MODEL --input $INPUT_PATH --aggregate --prefix $PREFIX
 EOF
