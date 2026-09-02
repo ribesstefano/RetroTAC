@@ -204,7 +204,7 @@ forward ensemble selection over 5x5-CV fold models -- see
 ## Usage
 
 ```python
-from retrotac.models.ensemble import RetroTAC
+from retrotac import RetroTAC
 
 model = RetroTAC.from_pretrained("{load_target}")
 predictions = model.predict(["CCO", "c1ccccc1"])
