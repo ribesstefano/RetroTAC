@@ -33,8 +33,8 @@ On Berzelius, to create the environment:
 
 ``bash
 module load Mambaforge/23.3.1-1-hpc1-bdist
-mamba create -n env-protac-synth python=3.12 -y
-mamba activate env-protac-synth
+mamba create -n env-retrotac python=3.12 -y
+mamba activate env-retrotac
 pip install uv
 ```
 
@@ -42,7 +42,7 @@ Export the `uv` to a proper location and activate the environment:
 
 ```bash
 export UV_CACHE_DIR="/proj/berzelius-2026-62/users/x_steri/.cache"
-mamba activate env-protac-synth
+mamba activate env-retrotac
 uv sync --extra training # For Stefano and Andrea, training stuff
 uv sync --all-extras # For Lukas, training only
 ```
@@ -222,7 +222,7 @@ Once all 25 `score_seed{S}_fold{F}.json` files exist, `--aggregate`:
 
 ##### Metrics reported per fold
 
-Each fold's `score_*.json` is flat and holds (see `protac_synth/models/metrics.py`):
+Each fold's `score_*.json` is flat and holds (see `retrotac/models/metrics.py`):
 
 * **regression** — `r2`, `rmse`, `mae`, `medae`, `max_error`,
   `explained_variance`, `bias` (mean signed error), `pearson_r`,

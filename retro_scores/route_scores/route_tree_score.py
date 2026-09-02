@@ -27,7 +27,7 @@ to every function that needs it.
 
 Usage
 -----
-Run inside the environment that has RDKit (``mamba activate env-protac-synth``)
+Run inside the environment that has RDKit (``mamba activate env-retrotac``)
 for exact heavy-atom counts; the scorer falls back to a SMILES approximation if
 RDKit is unavailable.
 

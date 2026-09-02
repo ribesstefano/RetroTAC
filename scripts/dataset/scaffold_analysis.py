@@ -104,7 +104,7 @@ import numpy as np
 import pandas as pd
 from rdkit.Chem.Scaffolds.MurckoScaffold import GetScaffoldForMol
 
-from protac_synth.chem_utils import get_scaffold, smiles_to_mol
+from retrotac.chem_utils import get_scaffold, smiles_to_mol
 
 DEFAULT_GROUP_COLS = [
     "whole=smiles",
@@ -540,7 +540,7 @@ def report_leakage(group_keys: Dict[str, pd.Series], base_keys: List[str], n_fol
     print(f"5. MEASURED LEAKAGE  (real {n_folds}-fold split, seed {seed})")
     print("=" * 86)
     try:
-        from protac_synth.models.training import get_fold_indices
+        from retrotac.models.training import get_fold_indices
     except ImportError as exc:
         print(f"  skipped: could not import get_fold_indices ({exc}).")
         print("  Run inside the training environment/container to enable this report.")

@@ -2298,7 +2298,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "protac-synthesizability"
+name = "retrotac"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

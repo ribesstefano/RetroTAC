@@ -12,7 +12,7 @@ From: ubuntu:22.04
 %files
     pyproject.toml /opt/repo/pyproject.toml
     uv.lock /opt/repo/uv.lock
-    protac_synth /opt/repo/protac_synth
+    retrotac /opt/repo/retrotac
     scripts /opt/repo/scripts
     config /opt/repo/config
     slurm /opt/repo/slurm

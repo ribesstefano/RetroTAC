@@ -1,4 +1,4 @@
-# PROTAC-Synthesizability Surrogate
+# RetroTAC Surrogate
 
 Work in progress repository to train a surrogate model for predicting PROTAC synthesizability.
 

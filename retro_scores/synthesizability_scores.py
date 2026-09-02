@@ -6,13 +6,13 @@ CLI entry point for computing synthesizability scores over a CSV of SMILES.
 Thin wrapper around mol_scores.compute_scores — all the scoring logic
 lives in the library; this just handles I/O and arguments. Requires the
 standalone `mol_scores` package (part of retro_scores/, see its
-README.md), installed separately from the main protac_synth environment.
+README.md), installed separately from the main retrotac environment.
 
 Example
 -------
     python retro_scores/synthesizability_scores.py \
-        data/protac_synth_data.csv \
-        data/protac_synth_scores.csv \
+        data/retrotac_data.csv \
+        data/retrotac_scores.csv \
         --smiles-col molecule
 
 Typically invoked from slurm/submit_protac_scores.sh as a batch job.
