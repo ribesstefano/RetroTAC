@@ -9,6 +9,7 @@ Requires: chemprop>=2.2.0, lightning. Download the CheMeleon weights once:
     urlretrieve("https://zenodo.org/records/15460715/files/chemeleon_mp.pt", "chemeleon_mp.pt")
 """
 
+import logging
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -24,7 +25,7 @@ from lightning import pytorch as pl
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from sklearn.metrics import r2_score
 
-print("cuda available:", torch.cuda.is_available(), flush=True)
+logger = logging.getLogger(__name__)
 
 
 class CheMeleonRegressor:
@@ -121,7 +122,7 @@ class CheMeleonRegressor:
             self._datapoints(smiles_list, y), featurizer
         )
         scaler = train_dset.normalize_targets()
-        print("built datasets...", flush=True)
+        logger.debug("built datasets...")
 
         if smiles_val is not None:
             val_dset = cpdata.MoleculeDataset(
@@ -158,7 +159,7 @@ class CheMeleonRegressor:
         mp.load_state_dict(ckpt["state_dict"])
         agg = cpnn.MeanAggregation()
 
-        print("loaded CheMeleon backbone...", flush=True)
+        logger.debug("loaded CheMeleon backbone...")
 
         output_transform = cpnn.UnscaleTransform.from_standard_scaler(scaler)
         ffn = cpnn.RegressionFFN(
@@ -191,7 +192,7 @@ class CheMeleonRegressor:
             enable_progress_bar=False,
             callbacks=[early, ckpt_cb],
         )
-        print("starting trainer.fit...", flush=True)
+        logger.debug("starting trainer.fit...")
         trainer.fit(mpnn, train_loader, val_loader)
 
         # restore the BEST-val weights (EarlyStopping alone leaves the last epoch)

@@ -6,6 +6,7 @@ preprocessing, and target scaling behind a fit/predict/score/save/load
 contract shared with the mlp/gnn backends (see training.py).
 """
 
+import logging
 import tempfile
 from pathlib import Path
 from typing import List, Optional
@@ -26,6 +27,8 @@ from retrotac.chem_utils import (  # noqa: E402
 )
 
 RDLogger.DisableLog("rdApp.*")
+
+logger = logging.getLogger(__name__)
 
 
 class XGBoostRegressor:
@@ -184,10 +187,7 @@ class XGBoostRegressor:
             early_stopping_rounds=50 if smiles_val is not None else None,
             random_state=self.random_state,
         )
-        print("-" * 80)
-        print(default_xgb)
-        print(self.xgb_params)
-        print("-" * 80)
+        logger.debug("default_xgb=%s xgb_params=%s", default_xgb, self.xgb_params)
         self.model_ = xgb.XGBRegressor(**{**default_xgb, **self.xgb_params})
 
         if smiles_val is not None:

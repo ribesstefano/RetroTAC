@@ -55,6 +55,7 @@ from sklearn.metrics import log_loss, mean_squared_error, r2_score, roc_auc_scor
 sys.path.append(str(Path(__file__).resolve().parents[2]))   # -> chem_utils
 
 from retrotac.models.config import ModelsConfig
+from retrotac.models.loading import compute_features, load_backend
 from retrotac.models.metrics import compute_all_metrics
 
 # ── paths (anchored to repo root, same as train.py's own defaults) ──────────
@@ -314,7 +315,10 @@ def _load_model_from_path(prefix: str, base: str) -> Any:
     Shared by `_load_model` (the aggregated `{prefix}_final`) and
     `predict_fold_models` (each individual `model_seed{seed}_fold{fold}`) --
     both are the same backend classes, saved via the same `save(path)`
-    convention, just under different base paths.
+    convention, just under different base paths. Thin wrapper around
+    `retrotac.models.loading.load_backend`, which also backs
+    `retrotac.models.ensemble.RetroTAC` -- both call sites share one
+    definition of "how a fold model is loaded".
 
     Args:
         prefix: Model prefix, e.g. "xgb_v1"; the leading token before "_"
@@ -327,17 +331,7 @@ def _load_model_from_path(prefix: str, base: str) -> Any:
     Raises:
         ValueError: If the prefix's leading token isn't xgb/mlp/gnn.
     """
-    kind = prefix.split("_")[0]
-    if kind == "xgb":
-        from retrotac.models.xgb.model import XGBoostRegressor
-        return XGBoostRegressor.load(base)
-    if kind == "mlp":
-        from retrotac.models.mlp.model import TorchMLPRegressor
-        return TorchMLPRegressor.load(base)
-    if kind == "gnn":
-        from retrotac.models.gnn.model import CheMeleonRegressor
-        return CheMeleonRegressor.load(base)
-    raise ValueError(f"Unknown model kind: {kind}")
+    return load_backend(prefix.split("_")[0], base)
 
 
 def _load_model(prefix: str, models_dir: Path) -> Any:
@@ -365,11 +359,10 @@ def _test_features(smiles: List[str], cfg: ModelsConfig) -> Tuple[Optional[np.nd
         Tuple of (fingerprints, descriptors); either may be None if disabled
         via the config's features.use_fingerprints / use_descriptors.
     """
-    from retrotac.chem_utils import compute_descriptors, compute_fingerprints, standardize_all
-    mols   = standardize_all(smiles)
-    X_fp   = compute_fingerprints(mols, cfg.features.fp_size, cfg.features.fp_radius) if cfg.features.use_fingerprints else None
-    X_desc = compute_descriptors(mols) if cfg.features.use_descriptors else None
-    return X_fp, X_desc
+    return compute_features(
+        smiles, cfg.features.fp_size, cfg.features.fp_radius,
+        cfg.features.use_fingerprints, cfg.features.use_descriptors,
+    )
 
 
 def evaluate_test(
