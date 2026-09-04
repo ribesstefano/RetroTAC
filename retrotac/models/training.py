@@ -13,7 +13,7 @@ import os
 import shutil
 from collections import defaultdict
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import optuna
@@ -29,6 +29,7 @@ from retrotac.chem_utils import (
 from retrotac.models.metrics import (
     DEFAULT_CLF_THRESHOLD,
     DEFAULT_OBJECTIVE_ALPHA,
+    DEFAULT_OBJECTIVE_BETA,
     compute_all_metrics,
     hpo_objective,
 )
@@ -38,8 +39,9 @@ from retrotac.models.metrics import (
 # replaying the params through a FixedTrial. "best_r2_inner" is the pre-composite
 # name, kept so older CV directories still aggregate.
 _NON_HPARAM_KEYS = (
-    "best_objective_inner", "best_r2_inner", "objective_alpha",
+    "best_objective_inner", "best_r2_inner", "objective_alpha", "objective_beta",
     "inner_rmse", "inner_spearman_rho", "inner_rank_penalty",
+    "inner_uncertainty_rho", "inner_uncertainty_penalty",
 )
 
 
@@ -249,6 +251,38 @@ def get_fold_indices(
     return fold_train_idx, fold_val_idx, inner_train_idx, inner_val_idx
 
 
+def _predict_with_uncertainty(
+    m: Any,
+    smiles: List[str],
+    X_fp: Optional[np.ndarray],
+    X_desc: Optional[np.ndarray],
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """Predict, plus the model's own predicted uncertainty when it has one.
+
+    Only `CheMeleonRegressor` with `head="evidential"` exposes
+    `is_evidential`/`predict_uncertainty` (see retrotac.models.gnn.model); every
+    other model/head falls through to a plain `predict()` with `uncertainties`
+    left `None`, which makes `hpo_objective` ignore `beta` entirely. For an
+    evidential model this also saves a redundant forward pass: its mean IS the
+    first NIG parameter `predict_uncertainty` already computes.
+
+    Args:
+        m: A fitted model (as returned by a `build_*` factory).
+        smiles: SMILES strings to predict on.
+        X_fp: Fingerprint feature matrix, or None (ignored by the GNN).
+        X_desc: Descriptor feature matrix, or None (ignored by the GNN).
+
+    Returns:
+        Tuple (y_pred, uncertainties): `uncertainties` is the predicted
+        standard deviation, same shape as `y_pred`, or None when `m` has no
+        notion of predictive uncertainty.
+    """
+    if getattr(m, "is_evidential", False):
+        u = m.predict_uncertainty(smiles)
+        return u["mean"], u["std"]
+    return m.predict(smiles, X_fp, X_desc), None
+
+
 def tune_inner_fold(
     build_fn: Callable,
     df_train: pd.DataFrame,
@@ -266,6 +300,7 @@ def tune_inner_fold(
     molecule_col: str = "molecule",
     build_kwargs: Optional[Dict] = None,
     objective_alpha: float = DEFAULT_OBJECTIVE_ALPHA,
+    objective_beta: float = DEFAULT_OBJECTIVE_BETA,
 ) -> Dict:
     """Run the inner Optuna loop for one outer fold and return the best params.
 
@@ -274,7 +309,11 @@ def tune_inner_fold(
     `retrotac.models.metrics.hpo_objective` — a blend of RMSE and a
     Spearman rank penalty, **minimised** (the study direction is "minimize";
     an inner-val R2, which was the objective before, is maximised, so a study
-    DB from an earlier run is rejected rather than silently mixed in).
+    DB from an earlier run is rejected rather than silently mixed in). For a
+    model with an evidential head (currently only the GNN's, see
+    `_predict_with_uncertainty`), the objective also blends in an
+    uncertainty-calibration penalty weighted by `objective_beta`; every other
+    model/head is unaffected.
 
     The study is backed by a node-local SQLite DB (reliable on the compute node)
     with a whole-file snapshot copied to /proj after every trial, so a preempted
@@ -301,6 +340,9 @@ def tune_inner_fold(
             patience, chemeleon_weights for the GNN).
         objective_alpha: Weight on RMSE vs the rank penalty in the composite
             objective; a run-level constant, never an Optuna-tuned value.
+        objective_beta: Weight on the uncertainty-calibration penalty vs the
+            rank penalty, forwarded to `hpo_objective`; a run-level constant,
+            and a no-op for a model with no predicted uncertainty.
 
     Returns:
         The best hyperparameters (Optuna study.best_params dict).
@@ -327,10 +369,11 @@ def tune_inner_fold(
             X_fp_val=X_fp_ival, X_desc_val=X_desc_ival,
             **build_kwargs,
         )
-        y_pred = m.predict(smiles_ival, X_fp_ival, X_desc_ival)
-        parts = hpo_objective(y_ival, y_pred, alpha=objective_alpha)
-        # keep the two components on the trial so the accuracy/ranking trade-off
-        # is inspectable in trials_*.csv without re-running anything
+        y_pred, uncertainties = _predict_with_uncertainty(m, smiles_ival, X_fp_ival, X_desc_ival)
+        parts = hpo_objective(y_ival, y_pred, alpha=objective_alpha,
+                              uncertainties=uncertainties, beta=objective_beta)
+        # keep the components on the trial so the accuracy/ranking/uncertainty
+        # trade-off is inspectable in trials_*.csv without re-running anything
         for key, value in parts.items():
             trial.set_user_attr(key, value)
         return parts["objective"]
@@ -378,11 +421,14 @@ def tune_inner_fold(
     with open(out_dir / f"best_params_seed{seed}_fold{fold_idx}.json", "w") as f:
         json.dump({
             **study.best_params,
-            "best_objective_inner": study.best_value,
-            "objective_alpha":      objective_alpha,
-            "inner_rmse":           best_attrs.get("rmse"),
-            "inner_spearman_rho":   best_attrs.get("spearman_rho"),
-            "inner_rank_penalty":   best_attrs.get("rank_penalty"),
+            "best_objective_inner":  study.best_value,
+            "objective_alpha":       objective_alpha,
+            "objective_beta":        objective_beta,
+            "inner_rmse":            best_attrs.get("rmse"),
+            "inner_spearman_rho":    best_attrs.get("spearman_rho"),
+            "inner_rank_penalty":    best_attrs.get("rank_penalty"),
+            "inner_uncertainty_rho":     best_attrs.get("uncertainty_rho"),
+            "inner_uncertainty_penalty": best_attrs.get("uncertainty_penalty"),
         }, f, indent=2)
     print(f"[{prefix}] seed {seed} fold {fold_idx} inner best | objective = "
           f"{study.best_value:.4f} (alpha={objective_alpha}) | "
@@ -409,6 +455,7 @@ def run_single_fold(
     molecule_col: str = "molecule",
     build_kwargs: Optional[Dict] = None,
     objective_alpha: float = DEFAULT_OBJECTIVE_ALPHA,
+    objective_beta: float = DEFAULT_OBJECTIVE_BETA,
     clf_threshold: float = DEFAULT_CLF_THRESHOLD,
 ) -> float:
     """Evaluate one outer fold end-to-end: tune on the inner split, refit on the
@@ -448,6 +495,10 @@ def run_single_fold(
             patience, chemeleon_weights for the GNN).
         objective_alpha: Weight on RMSE vs the rank penalty in the inner-loop
             composite objective, forwarded to tune_inner_fold.
+        objective_beta: Weight on the uncertainty-calibration penalty vs the
+            rank penalty, forwarded to tune_inner_fold and to the outer-val
+            objective computed below; a no-op for a model with no predicted
+            uncertainty.
         clf_threshold: Cut on the target scale used to also report this fold as
             a binary problem (default 0.7).
 
@@ -471,7 +522,7 @@ def run_single_fold(
         inner_train_idx, inner_val_idx,
         seed, fold_idx, prefix, cv_dir, target, fp_radius, n_trials,
         molecule_col=molecule_col, build_kwargs=build_kwargs,
-        objective_alpha=objective_alpha,
+        objective_alpha=objective_alpha, objective_beta=objective_beta,
     )
 
     smiles_tr = df_train.iloc[fold_train_idx][molecule_col].tolist()
@@ -494,10 +545,16 @@ def run_single_fold(
         **build_kwargs,
     )
     # predict once, then derive every reported metric from the same predictions
-    y_pred = m.predict(smiles_val, X_fp_val, X_desc_val)
+    y_pred, uncertainties = _predict_with_uncertainty(m, smiles_val, X_fp_val, X_desc_val)
     metrics = compute_all_metrics(y_val, y_pred, threshold=clf_threshold)
-    metrics["objective"] = hpo_objective(y_val, y_pred, alpha=objective_alpha)["objective"]
+    obj_parts = hpo_objective(y_val, y_pred, alpha=objective_alpha,
+                              uncertainties=uncertainties, beta=objective_beta)
+    metrics["objective"] = obj_parts["objective"]
     metrics["objective_alpha"] = float(objective_alpha)
+    if uncertainties is not None:
+        metrics["objective_beta"] = float(objective_beta)
+        metrics["uncertainty_rho"] = obj_parts["uncertainty_rho"]
+        metrics["uncertainty_penalty"] = obj_parts["uncertainty_penalty"]
     score = float(metrics["r2"])
 
     # persist the refit fold model unless the caller opted out (on by default)
@@ -520,6 +577,80 @@ def run_single_fold(
     return score
 
 
+def fit_final_model(
+    build_fn: Callable,
+    df_train: pd.DataFrame,
+    X_fp: Optional[np.ndarray],
+    X_desc: Optional[np.ndarray],
+    prefix: str,
+    models_dir: Path,
+    target: str,
+    params: Dict,
+    fp_radius: int = 3,
+    molecule_col: str = "molecule",
+    build_kwargs: Optional[Dict] = None,
+) -> Path:
+    """Fit and save one final model on the full dataset from explicit hyperparameters.
+
+    The short path around `aggregate_results` for a configuration that has no
+    5x5-CV run behind it to read hyperparameters from -- a new architecture
+    variant being tried out, say, where the point is a trained model rather than
+    a nested-CV estimate of its generalisation. Everything else matches
+    `aggregate_results`' tail: the same build_fn replay through a FixedTrial, the
+    same `{prefix}_final` model path, and a `{prefix}_hparams.yaml` in the same
+    place -- minus the `cv_*` blocks, which would be a lie without folds.
+
+    Args:
+        build_fn: Model factory from get_build_fn.
+        df_train: Full training DataFrame (SMILES in molecule_col + target columns).
+        X_fp: Fingerprint feature matrix, or None.
+        X_desc: Descriptor feature matrix, or None.
+        prefix: Run/model prefix; namespaces the output dir.
+        models_dir: Root directory the final model is saved under.
+        target: Name of the target column in df_train.
+        params: The hyperparameters to fit with, in the same namespace the
+            model's own `build_*` suggests (they are replayed through a
+            FixedTrial). A "fp_radius" entry, if present, overrides `fp_radius`.
+        fp_radius: Fallback Morgan fingerprint radius when `params` omits it.
+        molecule_col: Name of the SMILES column in df_train.
+        build_kwargs: Model-specific config forwarded to build_fn.
+
+    Returns:
+        The base path (no extension) the model was saved to.
+    """
+    build_kwargs = build_kwargs or {}
+    params = dict(params)                                 # never mutate the caller's dict
+    for key in _NON_HPARAM_KEYS:                          # tolerate a whole hparams.yaml
+        params.pop(key, None)                             # being passed straight back in
+    final_fp_radius = params.pop("fp_radius", fp_radius)
+
+    print(f"[{prefix}] fitting final model on n={len(df_train)} rows with "
+          f"explicit hyperparameters: {params}")
+    final_model = build_fn(
+        FixedTrial(params), final_fp_radius,
+        df_train[molecule_col].tolist(), df_train[[target]].values, X_fp, X_desc,
+        **build_kwargs,
+    )
+    model_path = models_dir / prefix / f"{prefix}_final"
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    final_model.save(str(model_path))
+    print(f"[{prefix}] final model saved to {model_path}")
+
+    hparams_out = {
+        "model":           prefix,
+        "hyperparameters": params,
+        "fp_radius":       final_fp_radius,
+        "n_train_rows":    int(len(df_train)),
+        # no cv_* keys: this model never went through the nested CV, and a
+        # reader of this file must not mistake it for one that did
+        "source":          "explicit hyperparameters (train.py --aggregate --hparams)",
+    }
+    with open(model_path.parent / f"{prefix}_hparams.yaml", "w") as f:
+        yaml.safe_dump(hparams_out, f, default_flow_style=False, sort_keys=False)
+    print(f"[{prefix}] hyperparameters saved to {model_path.parent / f'{prefix}_hparams.yaml'}")
+    return model_path
+
+
 def _summarize_folds(fold_rows: List[Dict]) -> Dict[str, Dict[str, float]]:
     """Mean/std/n per metric across the outer folds.
 
@@ -535,7 +666,7 @@ def _summarize_folds(fold_rows: List[Dict]) -> Dict[str, Dict[str, float]]:
         Mapping metric name -> {"mean", "std", "n"}, in the order the metrics
         appear in the fold JSONs.
     """
-    skip = {"seed", "fold_idx", "clf_threshold", "objective_alpha"}
+    skip = {"seed", "fold_idx", "clf_threshold", "objective_alpha", "objective_beta"}
     names = [k for k in dict.fromkeys(k for row in fold_rows for k in row)
              if k not in skip]
     summary = {}

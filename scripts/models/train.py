@@ -12,6 +12,8 @@ come from --config, so the CLI carries only the run-mode selectors and I/O paths
 Three run modes (dispatched in main):
   * --precompute : model-agnostic; compute + cache fp/desc, then exit
   * --aggregate  : collect the fold JSONs, retrain the final model
+                   (with --hparams: skip the folds, fit the final model on the
+                   full dataset from the hyperparameters in that YAML)
   * single-fold  : the default; --seed S --fold F tunes + evaluates ONE outer fold
 
 Precompute the feature caches once (tabular models):
@@ -20,16 +22,21 @@ Run one fold:
     python scripts/models/train.py --model xgb --input data.csv --seed 42 --fold 0 --prefix v1
 Aggregate after all folds:
     python scripts/models/train.py --model xgb --input data.csv --aggregate --prefix v1
+Fit a final model with hand-picked hyperparameters, no CV folds needed:
+    python scripts/models/train.py --model gnn --input data.csv --aggregate --prefix v1 \
+        --hparams config/gnn_evidential_hparams.yaml
 """
 import argparse
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
 from retrotac.chem_utils import get_scaffold  # noqa: E402
 from retrotac.models.config import ModelsConfig  # noqa: E402
 from retrotac.models.training import (  # noqa: E402
-    aggregate_results, cache_features, get_build_fn, prepare_inputs, run_single_fold,
+    aggregate_results, cache_features, fit_final_model, get_build_fn, prepare_inputs,
+    run_single_fold,
 )
 
 
@@ -76,6 +83,12 @@ def parse_args() -> argparse.Namespace:
                     help="single-fold mode: outer fold index (0..n_folds-1)")
     ap.add_argument("--aggregate", action="store_true",
                     help="aggregate the saved folds and retrain the final model")
+    ap.add_argument("--hparams", type=Path, default=None,
+                    help="with --aggregate: fit the final model on the full dataset with "
+                         "the hyperparameters in this YAML instead of reading them off the "
+                         "CV folds (which are then not required to exist). Accepts either a "
+                         "flat name->value mapping or a whole <prefix>_hparams.yaml written "
+                         "by a previous --aggregate run")
     ap.add_argument("--precompute", action="store_true",
                     help="compute + cache fp/desc once, then exit (run before the folds)")
     ap.add_argument("--no-save-fold-models", dest="save_fold_models", action="store_false",
@@ -87,13 +100,42 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
+def load_hparams(path: Path) -> dict:
+    """Read the --hparams YAML into the flat mapping fit_final_model expects.
+
+    Args:
+        path: YAML file holding either a flat hyperparameter mapping or a whole
+            `<prefix>_hparams.yaml` from a previous --aggregate run, in which
+            case its "hyperparameters" block is used and its recorded
+            "fp_radius" carried along.
+
+    Returns:
+        The hyperparameters as a flat dict.
+
+    Raises:
+        SystemExit: If the file doesn't parse into a mapping.
+    """
+    with open(path) as f:
+        raw = yaml.safe_load(f)
+    if not isinstance(raw, dict):
+        raise SystemExit(f"--hparams {path} must contain a YAML mapping, got {type(raw).__name__}")
+    if "hyperparameters" in raw:
+        params = dict(raw["hyperparameters"] or {})
+        if "fp_radius" in raw:
+            params.setdefault("fp_radius", raw["fp_radius"])
+        return params
+    return raw
+
+
 def main() -> None:
     """Dispatch on the parsed args to one of the run modes.
 
     --precompute is a model-agnostic one-shot that caches features and exits.
     Otherwise --model is required and output dirs are created lazily:
-    --aggregate collects the folds and retrains the final model, while the default
-    single-fold mode (requires --seed and --fold) tunes and evaluates one fold.
+    --aggregate collects the folds and retrains the final model (or, with
+    --hparams, skips the folds and fits the final model straight from the given
+    hyperparameters), while the default single-fold mode (requires --seed and
+    --fold) tunes and evaluates one fold.
 
     Args:
         None. Reads from the command line via parse_args().
@@ -150,6 +192,7 @@ def main() -> None:
             "max_epochs": cfg.torch.max_epochs,
             "patience": cfg.torch.patience,
             "chemeleon_weights": cfg.gnn.chemeleon_weights,
+            "head": cfg.gnn.head,
             "device": args.device,
         }
     else:
@@ -169,9 +212,14 @@ def main() -> None:
     run_id = f"{args.model}_{args.prefix}"
 
     if args.aggregate:
-        aggregate_results(build_fn, df_train, X_fp, X_desc, run_id,
-                          cv_dir, models_dir, cv_seeds, n_folds, target, fp_radius,
-                          molecule_col=molecule_col, build_kwargs=build_kwargs)
+        if args.hparams:
+            fit_final_model(build_fn, df_train, X_fp, X_desc, run_id,
+                            models_dir, target, load_hparams(args.hparams), fp_radius,
+                            molecule_col=molecule_col, build_kwargs=build_kwargs)
+        else:
+            aggregate_results(build_fn, df_train, X_fp, X_desc, run_id,
+                              cv_dir, models_dir, cv_seeds, n_folds, target, fp_radius,
+                              molecule_col=molecule_col, build_kwargs=build_kwargs)
     else:
         if args.seed is None or args.fold is None:
             raise SystemExit("single-fold mode requires --seed and --fold (or use --aggregate)")
@@ -182,6 +230,7 @@ def main() -> None:
                         save_fold_model=args.save_fold_models,
                         molecule_col=molecule_col, build_kwargs=build_kwargs,
                         objective_alpha=cfg.hpo.objective_alpha,
+                        objective_beta=cfg.hpo.objective_beta,
                         clf_threshold=cfg.hpo.classification_threshold)
 
 

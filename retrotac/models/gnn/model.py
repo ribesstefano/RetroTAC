@@ -5,6 +5,20 @@ CheMeleon foundation-model regressor (ChemProp D-MPNN, pretrained on Mordred
 descriptors, fine-tuned on our data). Graph-based; ignores X_fp / X_desc.
 Matches the fit/predict/score/save/load contract used by train.py.
 
+Two predictor heads are available, selected by `head`:
+  * "regression" (default) -- chemprop's RegressionFFN, a plain point estimate.
+  * "evidential"           -- chemprop's EvidentialFFN, which predicts the four
+    parameters (mean, v, alpha, beta) of a Normal-Inverse-Gamma distribution per
+    task and is trained with EvidentialLoss. predict() still returns only the
+    mean, so an evidential model is a drop-in for every existing caller;
+    predict_uncertainty() exposes the aleatoric/epistemic variance decomposition
+    that the extra outputs buy (see Amini et al. 2020 / Soleimany et al. 2021).
+
+The head is recorded inside the saved Lightning checkpoint (chemprop stores the
+predictor class in its hparams), so load() reconstructs either head without
+being told which -- checkpoints written before this option existed keep loading
+as plain RegressionFFN models.
+
 Requires: chemprop>=2.2.0, lightning. Download the CheMeleon weights once:
     urlretrieve("https://zenodo.org/records/15460715/files/chemeleon_mp.pt", "chemeleon_mp.pt")
 """
@@ -27,6 +41,9 @@ from sklearn.metrics import r2_score
 
 logger = logging.getLogger(__name__)
 
+#: Predictor heads `CheMeleonRegressor` can put on the CheMeleon backbone.
+HEADS = ("regression", "evidential")
+
 
 class CheMeleonRegressor:
     """Sklearn-style wrapper around a CheMeleon D-MPNN fine-tuned for regression.
@@ -40,6 +57,7 @@ class CheMeleonRegressor:
         self,
         gnn_params: Optional[Dict[str, Any]] = None,
         chemeleon_weights: str = "chemeleon_mp.pt",
+        head: str = "regression",
         max_epochs: int = 100,
         patience: int = 15,
         random_state: int = 42,
@@ -49,22 +67,47 @@ class CheMeleonRegressor:
 
         Args:
             gnn_params: FFN head / optimizer hyperparameters (dropout,
-                ffn_hidden_dim, ffn_n_layers, max_lr, batch_size); missing
-                keys fall back to defaults inside fit().
+                ffn_hidden_dim, ffn_n_layers, max_lr, batch_size, batch_norm,
+                and -- evidential head only -- v_kl); missing keys fall back to
+                defaults inside fit().
             chemeleon_weights: Path to the pretrained CheMeleon backbone
                 checkpoint (BondMessagePassing state dict).
+            head: Predictor head, one of HEADS: "regression" (default, a point
+                estimate) or "evidential" (a Normal-Inverse-Gamma head whose
+                extra outputs give per-molecule uncertainty, see
+                `predict_uncertainty`). Ignored by `load`, which reads the head
+                back out of the checkpoint instead.
             max_epochs: Maximum training epochs.
             patience: Early-stopping patience in epochs.
             random_state: Seed for Lightning's global RNG and the fallback
                 train/val split.
             device: Compute device for the Lightning trainer ("cpu" or GPU).
+
+        Raises:
+            ValueError: If `head` isn't one of HEADS.
         """
+        if head not in HEADS:
+            raise ValueError(f"Unknown head: {head!r} (expected one of {HEADS})")
         self.gnn_params = gnn_params or {}
         self.chemeleon_weights = chemeleon_weights
+        self.head = head
         self.max_epochs = max_epochs
         self.patience = patience
         self.random_state = random_state
         self.device = device
+
+    @property
+    def is_evidential(self) -> bool:
+        """Whether this model's head emits NIG parameters instead of a point estimate.
+
+        Read off the fitted/loaded network when there is one (chemprop records
+        the predictor class in the checkpoint, so this is also correct for a
+        model restored by `load`), and off the requested `head` otherwise.
+        """
+        model = getattr(self, "model_", None)
+        if model is not None:
+            return getattr(model.predictor, "n_targets", 1) > 1
+        return self.head == "evidential"
 
     def _datapoints(
         self, smiles_list: List[str], y: Optional[np.ndarray] = None
@@ -88,7 +131,12 @@ class CheMeleonRegressor:
         X_desc_val: Optional[np.ndarray] = None,
         trial: Optional[Any] = None,
     ) -> "CheMeleonRegressor":
-        """Fine-tune the CheMeleon backbone + a fresh regression head.
+        """Fine-tune the CheMeleon backbone + a fresh head of the configured type.
+
+        The head is whichever `head` the instance was built with -- a plain
+        RegressionFFN, or an EvidentialFFN trained against chemprop's
+        EvidentialLoss instead of MSE. Only the loss and the head's output width
+        change; the data pipeline, target scaling and early stopping are shared.
 
         Args:
             smiles_list: Training SMILES strings.
@@ -114,6 +162,11 @@ class CheMeleonRegressor:
         ffn_layers = p.get("ffn_n_layers", 1)
         max_lr = p.get("max_lr", 1e-3)
         batch_size = p.get("batch_size", 64)
+        # BatchNorm over the 2048-d CheMeleon fingerprint before the head. Off
+        # by default, which is both chemprop's own default and what every model
+        # trained before this key existed used, so an absent key reproduces the
+        # old architecture exactly.
+        batch_norm = p.get("batch_norm", False)
 
         featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
 
@@ -162,15 +215,30 @@ class CheMeleonRegressor:
         logger.debug("loaded CheMeleon backbone...")
 
         output_transform = cpnn.UnscaleTransform.from_standard_scaler(scaler)
-        ffn = cpnn.RegressionFFN(
+        ffn_kwargs = dict(
             output_transform=output_transform,
             input_dim=mp.output_dim,  # 2048 — must match CheMeleon
             hidden_dim=ffn_hidden,
             n_layers=ffn_layers,
             dropout=dropout,
         )
+        if self.head == "evidential":
+            # 4 outputs per task (mean, v, alpha, beta) trained with chemprop's
+            # EvidentialLoss; v_kl weights its evidence regularizer against the
+            # NIG negative log-likelihood (chemprop's own default is 0.2).
+            ffn = cpnn.EvidentialFFN(
+                criterion=cpnn.metrics.EvidentialLoss(v_kl=p.get("v_kl", 0.2)),
+                **ffn_kwargs,
+            )
+        else:
+            ffn = cpnn.RegressionFFN(**ffn_kwargs)
+        # RMSE is reported on the mean for either head (chemprop slices the NIG
+        # parameters down to their mean before the non-loss metrics); val_loss,
+        # what early stopping/checkpointing watch, stays the head's own
+        # criterion -- MSE for regression, the NIG loss for evidential.
         mpnn = cpmodels.MPNN(
-            mp, agg, ffn, batch_norm=False, metrics=[cpnn.metrics.RMSE()], max_lr=max_lr
+            mp, agg, ffn, batch_norm=batch_norm,
+            metrics=[cpnn.metrics.RMSE()], max_lr=max_lr,
         )
 
         # ── Lightning training with early stopping ─────────────────────────
@@ -203,6 +271,24 @@ class CheMeleonRegressor:
         self.trainer_ = trainer
         return self
 
+    def _raw_predict(self, smiles_list: List[str], batch_size: int = 64) -> np.ndarray:
+        """Run the network over SMILES and return its unreduced output.
+
+        Args:
+            smiles_list: SMILES strings to predict on.
+            batch_size: Molecules per forward pass (see `predict`).
+
+        Returns:
+            [n_samples, n_targets] for the regression head, or
+            [n_samples, n_targets, 4] — the NIG (mean, v, alpha, beta) — for
+            the evidential head. Already in real (unscaled) units.
+        """
+        featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
+        dset = cpdata.MoleculeDataset(self._datapoints(smiles_list), featurizer)
+        loader = cpdata.build_dataloader(dset, batch_size=batch_size, num_workers=0, shuffle=False)
+        preds = self.trainer_.predict(self.model_, loader)  # list of [batch, n_targets(, 4)]
+        return torch.cat(preds).numpy()  # already unscaled
+
     def predict(
         self,
         smiles_list: List[str],
@@ -228,13 +314,56 @@ class CheMeleonRegressor:
         Returns:
             Array of shape [len(smiles_list), n_targets] in real (unscaled)
             units — ChemProp's UnscaleTransform undoes the target scaling
-            applied during fit() inside the model's forward pass.
+            applied during fit() inside the model's forward pass. An
+            evidential head returns only the mean of its NIG output here, so
+            it stays a drop-in for every caller of the regression head; its
+            uncertainty is reached through `predict_uncertainty`.
         """
-        featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
-        dset = cpdata.MoleculeDataset(self._datapoints(smiles_list), featurizer)
-        loader = cpdata.build_dataloader(dset, batch_size=batch_size, num_workers=0, shuffle=False)
-        preds = self.trainer_.predict(self.model_, loader)  # list of [batch, n_targets]
-        return torch.cat(preds).numpy()  # already unscaled
+        raw = self._raw_predict(smiles_list, batch_size=batch_size)
+        return raw[..., 0] if self.is_evidential else raw
+
+    def predict_uncertainty(
+        self, smiles_list: List[str], batch_size: int = 64
+    ) -> Dict[str, np.ndarray]:
+        """Predict targets *and* their evidential uncertainty (evidential head only).
+
+        The head parameterises a Normal-Inverse-Gamma per (molecule, task), from
+        which chemprop's own estimators read the variance decomposition used
+        here: aleatoric (irreducible noise) `beta / (alpha - 1)`, epistemic
+        (model ignorance) `beta / (v * (alpha - 1))`, and their sum as the total
+        predictive variance. All of them come back in real target units, since
+        `EvidentialFFN` pushes beta through the same UnscaleTransform as the mean.
+
+        Args:
+            smiles_list: SMILES strings to predict on.
+            batch_size: Molecules per forward pass (see `predict`).
+
+        Returns:
+            Dict of [n_samples, n_targets] arrays: "mean", "aleatoric_var",
+            "epistemic_var", "total_var" and "std" (= sqrt(total_var), the
+            per-molecule predictive standard deviation directly comparable to
+            an ensemble's spread across members).
+
+        Raises:
+            ValueError: If this model wasn't built with the evidential head.
+        """
+        if not self.is_evidential:
+            raise ValueError(
+                "predict_uncertainty needs the evidential head; this model has "
+                f"head={self.head!r} (a point estimate carries no uncertainty)."
+            )
+        raw = self._raw_predict(smiles_list, batch_size=batch_size)
+        mean, v, alpha, beta = (raw[..., i] for i in range(4))
+        aleatoric = beta / (alpha - 1.0)
+        epistemic = aleatoric / v
+        total = aleatoric + epistemic
+        return {
+            "mean": mean,
+            "aleatoric_var": aleatoric,
+            "epistemic_var": epistemic,
+            "total_var": total,
+            "std": np.sqrt(total),
+        }
 
     def score(
         self,
@@ -279,12 +408,15 @@ class CheMeleonRegressor:
             device: Compute device to load the checkpoint onto.
 
         Returns:
-            Restored CheMeleonRegressor instance.
+            Restored CheMeleonRegressor instance, with `head` set from the
+            predictor the checkpoint records (so checkpoints written before the
+            evidential head existed come back as "regression" ones).
         """
         instance = cls(device=device)
         instance.model_ = cpmodels.MPNN.load_from_checkpoint(
             f"{path}.ckpt", map_location=torch.device(device)
         )
+        instance.head = "evidential" if instance.is_evidential else "regression"
         instance.trainer_ = pl.Trainer(
             accelerator=device, devices=1, logger=False, enable_progress_bar=False
         )

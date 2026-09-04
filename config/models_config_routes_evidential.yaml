@@ -1,0 +1,39 @@
+# models_config_routes_evidential.yaml
+# ====================================
+# config/models_config_routes.yaml with one thing changed: the GNN puts
+# chemprop's EvidentialFFN on the CheMeleon backbone instead of RegressionFFN,
+# so the model predicts a Normal-Inverse-Gamma per molecule and carries its own
+# uncertainty (see retrotac/models/gnn/model.py's predict_uncertainty). Kept as
+# a separate file rather than a CLI flag because the head is a modelling knob,
+# and modelling knobs live in --config.
+#
+# Everything else -- target, splits, feature params -- is identical to the
+# routes config, so runs from the two files stay comparable.
+features:
+  use_fingerprints: true
+  use_descriptors: true
+  tune_fp_radius: false
+  fp_radius: 8
+  fp_size: 1024
+
+target: synthesizability   # continuous 0-1, no NaN in routes_train_val.csv
+molecule_col: smiles       # routes_train_val.csv header is lowercase
+
+cross_validation:
+  seeds: [42, 123, 456, 789, 1011]
+  n_folds: 5
+
+tracking:
+  wandb_project: retrotac
+  study_prefix: routes_evidential
+
+torch:
+  device: auto           # auto | cpu | cuda | mps
+  max_epochs: 500
+  patience: 20
+  batch_size: 256        # fixed (not Optuna-tuned) for MLP/GNN
+
+gnn:
+  # repo-relative: the container binds the checkout and runs from its root
+  chemeleon_weights: chemeleon/chemeleon_mp.pt
+  head: evidential       # "regression" (default elsewhere) | "evidential"

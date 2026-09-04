@@ -18,7 +18,11 @@ from typing import List, Union
 
 import yaml
 
-from retrotac.models.metrics import DEFAULT_CLF_THRESHOLD, DEFAULT_OBJECTIVE_ALPHA
+from retrotac.models.metrics import (
+    DEFAULT_CLF_THRESHOLD,
+    DEFAULT_OBJECTIVE_ALPHA,
+    DEFAULT_OBJECTIVE_BETA,
+)
 
 
 @dataclass(frozen=True)
@@ -44,7 +48,14 @@ class TorchConfig:
 
 @dataclass(frozen=True)
 class GNNConfig:
+    """CheMeleon backbone path + which predictor head to put on it.
+
+    `head` is one of retrotac.models.gnn.model.HEADS -- "regression" (the
+    default point-estimate head every earlier run used) or "evidential" (a
+    Normal-Inverse-Gamma head that also predicts its own uncertainty).
+    """
     chemeleon_weights: str
+    head: str = "regression"
 
 
 @dataclass(frozen=True)
@@ -53,10 +64,14 @@ class HPOConfig:
 
     `objective_alpha` weights RMSE against the Spearman rank penalty in the
     composite Optuna objective (see retrotac.models.metrics.hpo_objective);
-    `classification_threshold` is the cut used to also report the folds as a
-    binary problem.
+    `objective_beta` weights an uncertainty-calibration penalty against that
+    rank penalty, and only has any effect for a model that predicts its own
+    uncertainty (currently: the GNN's evidential head, gnn.head="evidential")
+    -- ignored entirely for every other model/head; `classification_threshold`
+    is the cut used to also report the folds as a binary problem.
     """
     objective_alpha: float = DEFAULT_OBJECTIVE_ALPHA
+    objective_beta: float = DEFAULT_OBJECTIVE_BETA
     classification_threshold: float = DEFAULT_CLF_THRESHOLD
 
 
@@ -114,9 +129,11 @@ class ModelsConfig:
             ),
             gnn=GNNConfig(
                 chemeleon_weights=gnn_cfg.get("chemeleon_weights", "chemeleon_mp.pt"),
+                head=gnn_cfg.get("head", "regression"),
             ),
             hpo=HPOConfig(
                 objective_alpha=float(hpo_cfg.get("objective_alpha", DEFAULT_OBJECTIVE_ALPHA)),
+                objective_beta=float(hpo_cfg.get("objective_beta", DEFAULT_OBJECTIVE_BETA)),
                 classification_threshold=float(
                     hpo_cfg.get("classification_threshold", DEFAULT_CLF_THRESHOLD)),
             ),

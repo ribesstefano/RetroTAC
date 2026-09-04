@@ -21,6 +21,16 @@ hpo:
   # rank penalty spans the full [0, 1], so 0.5 still lets ranking dominate --
   # raise it towards ~0.8 if calibration matters more than ordering.
   objective_alpha: 0.5
+  # Weight, inside the (1 - objective_alpha) budget, on an uncertainty-
+  # calibration penalty vs the rank penalty:
+  #   ... + (1 - objective_alpha) * ((1-objective_beta)*rank_penalty + objective_beta*uncertainty_penalty)
+  # Only has any effect for a model that predicts its own uncertainty
+  # (currently: the GNN's evidential head, gnn.head: evidential) -- for every
+  # other model/head this value is read but never used, since there is no
+  # uncertainty to weight. 0.1 here is just a mild nudge for when that head
+  # does get tuned; raise it towards 1.0 to prioritize calibration over
+  # ranking, or to 0.0 for pure ranking (unweighted uncertainty).
+  objective_beta: 0.1
   # Cut applied to target AND predictions for the binary metrics reported per
   # fold (ROC-AUC / PR-AUC rank on the raw predictions, not the thresholded ones).
   classification_threshold: 0.7

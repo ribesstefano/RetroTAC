@@ -14,11 +14,13 @@ per-target column, the same convention each model's own `.score()` already uses:
     thresholding a score before feeding it to an AUC throws away exactly the
     information those metrics measure.
   * `hpo_objective`          -- the single scalar the Optuna inner loop
-    MINIMISES: a convex blend of RMSE and a Spearman-derived rank penalty.
+    MINIMISES: a convex blend of RMSE and a Spearman-derived rank penalty,
+    plus (optionally, for models that predict their own uncertainty) an
+    uncertainty-calibration penalty.
 
 The target is assumed to live on [0, 1] (see `DEFAULT_CLF_THRESHOLD`).
 """
-from typing import Dict, Iterator, Tuple
+from typing import Dict, Iterator, Tuple, Optional
 
 import numpy as np
 from scipy.stats import kendalltau, pearsonr, spearmanr
@@ -46,6 +48,7 @@ from sklearn.metrics import (
 # lands around 0.05-0.25 while the rank penalty spans the full [0, 1], so an
 # alpha of 0.5 still lets ranking dominate. Tune it in models_config.yaml.
 DEFAULT_OBJECTIVE_ALPHA = 0.5
+DEFAULT_OBJECTIVE_BETA = 0.1
 
 # Cut applied to both the target and the predictions to derive binary labels.
 DEFAULT_CLF_THRESHOLD = 0.7
@@ -81,6 +84,35 @@ def _finite_columns(y_true: np.ndarray, y_pred: np.ndarray) -> Iterator[Tuple[np
         t, p = t2[:, i], p2[:, i]
         mask = np.isfinite(t) & np.isfinite(p)
         yield t[mask], p[mask]
+
+
+def _finite_columns_with_uncertainty(
+    y_true: np.ndarray, y_pred: np.ndarray, uncertainties: np.ndarray
+) -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """Like `_finite_columns`, plus an `uncertainties` column dropped in lockstep.
+
+    Args:
+        y_true: Ground-truth targets, shape (n_samples, n_targets) or (n_samples,).
+        y_pred: Predictions, same shape as `y_true`.
+        uncertainties: Per-sample uncertainty estimates, same shape as `y_true`.
+
+    Yields:
+        (col_true, col_pred, col_uncertainty) 1-D float arrays, restricted to
+        rows finite in all three.
+
+    Raises:
+        ValueError: If the three arrays disagree on shape.
+    """
+    t2, p2, u2 = _as_2d(y_true), _as_2d(y_pred), _as_2d(uncertainties)
+    if not (t2.shape == p2.shape == u2.shape):
+        raise ValueError(
+            f"y_true {t2.shape}, y_pred {p2.shape} and uncertainties {u2.shape} "
+            "must all have the same shape"
+        )
+    for i in range(t2.shape[1]):
+        t, p, u = t2[:, i], p2[:, i], u2[:, i]
+        mask = np.isfinite(t) & np.isfinite(p) & np.isfinite(u)
+        yield t[mask], p[mask], u[mask]
 
 
 def _mean(values) -> float:
@@ -218,38 +250,69 @@ def hpo_objective(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     alpha: float = DEFAULT_OBJECTIVE_ALPHA,
+    uncertainties: Optional[np.ndarray] = None,
+    beta: float = DEFAULT_OBJECTIVE_BETA,
 ) -> Dict[str, float]:
     """Composite Optuna objective -- **lower is better**.
 
-        objective = alpha * RMSE + (1 - alpha) * (1 - spearman_rho) / 2
+        objective = alpha * RMSE + (1 - alpha) * rank_penalty                    [uncertainties=None]
+        objective = alpha * RMSE + (1 - alpha) * ((1-beta)*rank_penalty + beta*uncertainty_penalty)  [otherwise]
 
-    The rank penalty maps rho in [-1, 1] onto [0, 1], so a perfectly ordered
-    prediction contributes 0 and a perfectly inverted one contributes 1. RMSE
-    keeps the tuner honest about calibration, which a pure rank objective would
-    happily throw away.
+        rank_penalty        = (1 - spearman_rho) / 2
+        uncertainty_penalty = (1 - uncertainty_rho) / 2
+
+    `rank_penalty` maps `spearman_rho` (correlation of `y_true` vs `y_pred`)
+    from [-1, 1] onto [0, 1], so a perfectly ordered prediction contributes 0
+    and a perfectly inverted one contributes 1. RMSE keeps the tuner honest
+    about calibration, which a pure rank objective would happily throw away.
+
+    `uncertainty_penalty` is the same mapping applied to `uncertainty_rho`, the
+    Spearman correlation between `|y_true - y_pred|` and `uncertainties` -- the
+    same calibration signal `scripts/models/evaluation.py` reports as
+    `uncertainty_error_rho`. A well-calibrated model is more uncertain exactly
+    where it is more wrong, so a high (near +1) correlation is rewarded (low
+    penalty). It lives inside the `(1 - alpha)` budget alongside the rank
+    penalty rather than adding a fourth free weight, so the objective stays a
+    genuine convex combination of RMSE / rank quality / uncertainty quality.
 
     A collapsed model (constant predictions, too few finite rows) yields an
     undefined rho; it is treated as rho = -1, the maximum penalty, rather than
-    letting a NaN reach Optuna.
+    letting a NaN reach Optuna. Same treatment for uncertainty_rho.
 
     Args:
         y_true: Ground-truth targets, shape (n_samples, n_targets).
         y_pred: Predictions, same shape as `y_true`.
         alpha: Weight on RMSE, in [0, 1]. `alpha=1` is pure RMSE, `alpha=0` is
-            pure ranking. Must be a run-level constant, never an Optuna-suggested
-            hyperparameter: trial values are only comparable under a fixed
-            objective, and a tunable alpha just gets driven to whichever end
-            flatters the trial at hand.
+            pure ranking/uncertainty. Must be a run-level constant, never an
+            Optuna-suggested hyperparameter: trial values are only comparable
+            under a fixed objective, and a tunable alpha just gets driven to
+            whichever end flatters the trial at hand.
+        uncertainties: Optional per-sample uncertainty estimates (e.g. a
+            predicted standard deviation), shape (n_samples, n_targets) --
+            typically `CheMeleonRegressor.predict_uncertainty(...)["std"]`
+            for an evidential-head GNN. `None` (the default, and the only
+            option for models with no notion of predictive uncertainty)
+            leaves the objective exactly the pre-uncertainty formula; `beta`
+            is then ignored regardless of its value.
+        beta: Weight on the uncertainty penalty within the `(1 - alpha)`
+            budget, in [0, 1]. `beta=0` is pure ranking (the historical
+            behaviour), `beta=1` is pure uncertainty calibration. Same
+            run-level-constant caveat as `alpha`. Only takes effect when
+            `uncertainties` is given.
 
     Returns:
         Dict with `objective` plus its inputs `rmse`, `spearman_rho` and
-        `rank_penalty`, so the trade-off can be inspected per trial.
+        `rank_penalty`, so the trade-off can be inspected per trial. When
+        `uncertainties` is given, also `uncertainty_rho` and
+        `uncertainty_penalty`.
 
     Raises:
-        ValueError: If `alpha` is outside [0, 1].
+        ValueError: If `alpha` or `beta` is outside [0, 1].
     """
     if not 0.0 <= alpha <= 1.0:
         raise ValueError(f"alpha must be in [0, 1], got {alpha}")
+    if not 0.0 <= beta <= 1.0:
+        raise ValueError(f"beta must be in [0, 1], got {beta}")
 
     usable = [(t, p) for t, p in _finite_columns(y_true, y_pred) if t.size >= 2]
     if not usable:
@@ -262,9 +325,32 @@ def hpo_objective(
         rho = _mean(-1.0 if np.isnan(r) else r for r in rhos)
 
     rank_penalty = (1.0 - rho) / 2.0
-    return {
-        "objective":    float(alpha * rmse + (1.0 - alpha) * rank_penalty),
+    result = {
         "rmse":         float(rmse),
         "spearman_rho": float(rho),
         "rank_penalty": float(rank_penalty),
     }
+
+    if uncertainties is None:
+        result["objective"] = float(alpha * rmse + (1.0 - alpha) * rank_penalty)
+        return result
+
+    usable_u = [
+        (t, p, u) for t, p, u in _finite_columns_with_uncertainty(y_true, y_pred, uncertainties)
+        if t.size >= 2
+    ]
+    if not usable_u:
+        uncertainty_rho = -1.0
+    else:
+        abs_errors = [np.abs(t - p) for t, p, u in usable_u]
+        u_rhos = [_safe_corr(spearmanr, ae, u) for ae, (_, _, u) in zip(abs_errors, usable_u)]
+        uncertainty_rho = _mean(-1.0 if np.isnan(r) else r for r in u_rhos)
+
+    uncertainty_penalty = (1.0 - uncertainty_rho) / 2.0
+    result["uncertainty_rho"] = float(uncertainty_rho)
+    result["uncertainty_penalty"] = float(uncertainty_penalty)
+    result["objective"] = float(
+        alpha * rmse
+        + (1.0 - alpha) * ((1.0 - beta) * rank_penalty + beta * uncertainty_penalty)
+    )
+    return result

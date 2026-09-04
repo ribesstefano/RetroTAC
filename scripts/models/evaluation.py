@@ -22,6 +22,15 @@ calibration (Spearman rho between spread and error, k-sigma coverage, ECE/MCE)
 `{out}/cv_fold_test_predictions.pkl` and reused on rerun (pass
 `--force-predict` to recompute).
 
+`--evidential-model <prefix>` adds the other way of getting an uncertainty:
+an evidential-head GNN (see retrotac/models/gnn/model.py) predicts the
+parameters of a Normal-Inverse-Gamma per molecule, so ONE model reports its own
+aleatoric/epistemic sigma instead of inferring one from ensemble disagreement.
+Its predictions are scored through the same metrics on the same evaluation
+rows, landing as extra rows in `ensemble_strategies.csv` and in the focused
+`uncertainty_comparison.csv`, so "does a bigger sigma really mean a bigger
+error?" is answered on equal terms for both.
+
 Usage
 -----
     # CV comparison only (no test set yet):
@@ -36,6 +45,11 @@ Usage
     # also score ensemble strategies over all 5x5-CV fold models:
     python evaluation.py --models xgb_v1 mlp_v1 gnn_v1 \
         --test-csv data/sets/routes_test.csv --output-root outputs --ensemble
+
+    # ... and compare those ensembles' uncertainty against an evidential GNN's:
+    python evaluation.py --models xgb_v1 mlp_v1 gnn_v1 \
+        --test-csv data/sets/routes_test.csv --output-root outputs --ensemble \
+        --evidential-model gnn_routes_evidential --out uncertainty
 """
 import argparse
 import json
@@ -115,9 +129,22 @@ def parse_args() -> argparse.Namespace:
                          "scored on (default: 0.2)")
     ap.add_argument("--ensemble-iterations", type=int, default=100,
                     help="greedy selection iterations for the Caruana strategy (default: 100)")
+    ap.add_argument("--evidential-model", default=None,
+                    help="prefix of an evidential-head GNN run (e.g. gnn_routes_evidential, "
+                         "see slurm/train_final_gnn_evidential.sh) whose final model predicts "
+                         "its own uncertainty; scored on the same evaluation rows as the "
+                         "ensemble strategies so the two uncertainties can be compared "
+                         "(requires --ensemble). Do NOT also list it in --models: it has no "
+                         "CV folds to load")
+    ap.add_argument("--device", default="cpu",
+                    help="compute device for loading/predicting with the models "
+                         "(cpu or cuda; only the gnn backend uses it). Default: cpu")
     args = ap.parse_args()
     if args.ensemble and not args.test_csv:
         ap.error("--ensemble requires --test-csv")
+    if args.evidential_model and not args.ensemble:
+        ap.error("--evidential-model requires --ensemble (it is scored against the "
+                 "ensemble strategies, on their evaluation split)")
     return args
 
 
@@ -309,7 +336,7 @@ def run_autorank(wide: pd.DataFrame, rank_metric: str, out_dir: Path) -> Any:
 
 
 # ── Step 3 (optional): evaluate final models on a held-out test set ─────────
-def _load_model_from_path(prefix: str, base: str) -> Any:
+def _load_model_from_path(prefix: str, base: str, device: str = "cpu") -> Any:
     """Load a saved model from an explicit base path using its class's loader.
 
     Shared by `_load_model` (the aggregated `{prefix}_final`) and
@@ -324,6 +351,7 @@ def _load_model_from_path(prefix: str, base: str) -> Any:
         prefix: Model prefix, e.g. "xgb_v1"; the leading token before "_"
             selects the loader class.
         base: Base path (no extension) passed to the class's own `load()`.
+        device: Compute device; only the gnn backend's `load()` takes one.
 
     Returns:
         The loaded model instance.
@@ -331,20 +359,22 @@ def _load_model_from_path(prefix: str, base: str) -> Any:
     Raises:
         ValueError: If the prefix's leading token isn't xgb/mlp/gnn.
     """
-    return load_backend(prefix.split("_")[0], base)
+    return load_backend(prefix.split("_")[0], base, device=device)
 
 
-def _load_model(prefix: str, models_dir: Path) -> Any:
+def _load_model(prefix: str, models_dir: Path, device: str = "cpu") -> Any:
     """Load the saved final model for a prefix (see `_load_model_from_path`).
 
     Args:
         prefix: Model prefix, e.g. "xgb_v1".
         models_dir: Directory holding one subfolder per prefix.
+        device: Compute device forwarded to the backend's loader.
 
     Returns:
         The loaded model instance.
     """
-    return _load_model_from_path(prefix, str(models_dir / prefix / f"{prefix}_final"))
+    return _load_model_from_path(
+        prefix, str(models_dir / prefix / f"{prefix}_final"), device=device)
 
 
 def _test_features(smiles: List[str], cfg: ModelsConfig) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
@@ -369,6 +399,7 @@ def evaluate_test(
     model_prefixes: List[str], test_csv: str, models_dir: Path, cfg: ModelsConfig,
     smiles_col: str, target_col: str, clf_threshold: float,
     X_fp: Optional[np.ndarray] = None, X_desc: Optional[np.ndarray] = None,
+    device: str = "cpu",
 ) -> Tuple[Dict[str, Dict[str, np.ndarray]], Dict[str, Dict[str, float]]]:
     """Load each final model and score it on a held-out test CSV.
 
@@ -387,6 +418,7 @@ def evaluate_test(
             them for `predict_fold_models` too -- to avoid recomputing
             fingerprints/descriptors for the same molecules twice.
         X_desc: Precomputed descriptors, or None to compute internally.
+        device: Compute device forwarded to the backend loaders (gnn only).
 
     Returns:
         Tuple of (predictions, results):
@@ -405,7 +437,7 @@ def evaluate_test(
     for prefix in model_prefixes:
         label = _label(prefix)
         try:
-            model = _load_model(prefix, models_dir)
+            model = _load_model(prefix, models_dir, device=device)
             y_pred = model.predict(smiles, X_fp=X_fp, X_desc=X_desc)   # GNN ignores X_fp/X_desc
             predictions[label] = {"y_pred": y_pred, "y_true": y_true}
             results[label] = compute_all_metrics(y_true, y_pred, threshold=clf_threshold)
@@ -426,6 +458,7 @@ def predict_fold_models(
     smiles_col: str, target_col: str, seeds: List[int], n_folds: int,
     out_dir: Path, force: bool = False,
     X_fp: Optional[np.ndarray] = None, X_desc: Optional[np.ndarray] = None,
+    device: str = "cpu",
 ) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
     """Predict a held-out test CSV with every 5x5-CV fold model, caching to disk.
 
@@ -454,6 +487,7 @@ def predict_fold_models(
             fingerprints/descriptors for the same molecules twice. Ignored
             when the prediction cache already exists.
         X_desc: Precomputed descriptors, or None to compute internally.
+        device: Compute device forwarded to the backend loaders (gnn only).
 
     Returns:
         Tuple of (fold_predictions, y_true):
@@ -483,7 +517,7 @@ def predict_fold_models(
             for fold in range(n_folds):
                 base = cv_dir / prefix / f"model_seed{seed}_fold{fold}"
                 try:
-                    model = _load_model_from_path(prefix, str(base))
+                    model = _load_model_from_path(prefix, str(base), device=device)
                     y_pred = model.predict(smiles, X_fp=X_fp, X_desc=X_desc)
                     fold_predictions[f"{label}_seed{seed}_fold{fold}"] = np.asarray(y_pred, dtype=float).reshape(-1)
                 except Exception as e:
@@ -494,6 +528,100 @@ def predict_fold_models(
         pickle.dump({"fold_predictions": fold_predictions, "y_true": y_true}, f)
     print(f"  Predicted with {len(fold_predictions)} fold models -> cached at {cache_path}")
     return fold_predictions, y_true
+
+
+# ── Step 4b (optional): the evidential GNN's own predicted uncertainty ──────
+EVIDENTIAL_PRED_FILENAME = "evidential_test_predictions.pkl"
+
+
+def predict_evidential(
+    prefix: str, test_csv: str, models_dir: Path, smiles_col: str, target_col: str,
+    out_dir: Path, device: str = "cpu", force: bool = False, batch_size: int = 256,
+) -> Dict[str, np.ndarray]:
+    """Predict a held-out test CSV with an evidential GNN, uncertainty included.
+
+    The counterpart to `predict_fold_models`: where an ensemble reads its
+    uncertainty off the disagreement between many models, an evidential head
+    predicts the parameters of a Normal-Inverse-Gamma per molecule and reports
+    its own -- from ONE model, one forward pass (see
+    retrotac.models.gnn.model.CheMeleonRegressor.predict_uncertainty). Scoring
+    the two side by side on the same rows is the point of `--evidential-model`.
+
+    Cached to `{out_dir}/evidential_test_predictions.pkl` and reused on rerun
+    unless `force`.
+
+    Args:
+        prefix: Prefix of the evidential run, e.g. "gnn_routes_evidential"; its
+            final model is read from `models_dir/{prefix}/{prefix}_final`.
+        test_csv: Path to the held-out test CSV (the same one the ensemble uses).
+        models_dir: Directory holding one subfolder per prefix.
+        smiles_col: SMILES column name in `test_csv`.
+        target_col: Target column name in `test_csv`.
+        out_dir: Directory to read/write the prediction cache in.
+        device: Compute device for the GNN forward pass.
+        force: Recompute and overwrite the cache even if it already exists.
+        batch_size: Molecules per forward pass.
+
+    Returns:
+        Dict of 1-D arrays over the test set, in row order: "mean", "std"
+        (total predictive sigma), "aleatoric_std", "epistemic_std", "y_true".
+
+    Raises:
+        ValueError: If `prefix` names a model that has no evidential head, in
+            which case there is no predicted uncertainty to compare.
+    """
+    cache_path = out_dir / EVIDENTIAL_PRED_FILENAME
+    if cache_path.exists() and not force:
+        print(f"  Found cached evidential predictions at {cache_path} -- skipping predict.")
+        with open(cache_path, "rb") as f:
+            return pickle.load(f)
+
+    df = pd.read_csv(test_csv)
+    smiles = df[smiles_col].tolist()
+    model = _load_model(prefix, models_dir, device=device)
+    if not getattr(model, "is_evidential", False):
+        raise ValueError(
+            f"--evidential-model {prefix!r} was trained with a point-estimate head; "
+            "train it with a config whose gnn.head is 'evidential' (see "
+            "config/models_config_routes_evidential.yaml) to get an uncertainty to compare."
+        )
+    u = model.predict_uncertainty(smiles, batch_size=batch_size)
+    out = {
+        "mean":           np.asarray(u["mean"], dtype=float).reshape(-1),
+        "std":            np.asarray(u["std"], dtype=float).reshape(-1),
+        "aleatoric_std":  np.sqrt(np.asarray(u["aleatoric_var"], dtype=float)).reshape(-1),
+        "epistemic_std":  np.sqrt(np.asarray(u["epistemic_var"], dtype=float)).reshape(-1),
+        "y_true":         df[target_col].to_numpy(dtype=float),
+    }
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "wb") as f:
+        pickle.dump(out, f)
+    print(f"  Predicted {len(out['mean'])} molecules with {prefix} -> cached at {cache_path}")
+    return out
+
+
+def evidential_predictors(evidential: Dict[str, np.ndarray]) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+    """Split one evidential prediction into the three sigmas worth comparing.
+
+    All three share the same point estimate and differ only in which part of the
+    NIG variance they call uncertainty: the total (the like-for-like counterpart
+    of an ensemble's spread), the epistemic part alone (model ignorance, which
+    is what ensemble disagreement actually measures), and the aleatoric part
+    alone (irreducible noise, which an ensemble cannot see at all).
+
+    Args:
+        evidential: The dict `predict_evidential` returns.
+
+    Returns:
+        Row name -> (prediction, sigma), ready for `run_ensemble_strategies`'
+        `extra_predictors`.
+    """
+    return {
+        "evidential_total":     (evidential["mean"], evidential["std"]),
+        "evidential_epistemic": (evidential["mean"], evidential["epistemic_std"]),
+        "evidential_aleatoric": (evidential["mean"], evidential["aleatoric_std"]),
+    }
 
 
 # ── Step 5 (optional): ensemble-selection strategies over the fold pool ─────
@@ -657,55 +785,55 @@ def save_ensemble_weights(
     return filepath
 
 
-def _ensemble_uncertainty_metrics(
-    member_preds: np.ndarray, ensemble_pred: np.ndarray, y_eval: np.ndarray,
+def _uncertainty_metrics(
+    std: Optional[np.ndarray], pred: np.ndarray, y_eval: np.ndarray,
     clf_threshold: float, n_bins: int = 10,
 ) -> Dict[str, float]:
-    """Uncertainty and calibration metrics for one ensemble's predictions.
+    """Uncertainty and calibration metrics for one predictor's per-sample sigma.
 
-    Per-sample spread across the distinct member models stands in for
-    predictive uncertainty, checked two ways: rank correlation with the actual
-    error (does higher spread mean bigger error?) and k-sigma coverage (does
-    `|error| <= k * std` happen about as often as a calibrated k-sigma
-    interval predicts -- ~68.3/95.5/99.7% for k=1/2/3?). Separately, Expected
-    and Maximum Calibration Error treat the ensemble's raw [0, 1] prediction
-    as a probability for the `clf_threshold`-derived binary label.
+    The scoring is deliberately agnostic about where `std` came from -- an
+    ensemble's spread across members or an evidential head's own predicted
+    variance -- so the two are directly comparable on the same rows. A sigma is
+    checked two ways: rank correlation with the actual error (does a larger
+    sigma mean a bigger error?) and k-sigma coverage (does `|error| <= k*sigma`
+    happen about as often as a calibrated k-sigma interval predicts --
+    ~68.3/95.5/99.7% for k=1/2/3?). Separately, Expected and Maximum
+    Calibration Error treat the raw [0, 1] prediction as a probability for the
+    `clf_threshold`-derived binary label.
 
     Args:
-        member_preds: One row per distinct member model's raw prediction on
-            the evaluation split, shape (n_members, n_eval). Unweighted --
-            spread is read across the base learners themselves, not weighted
-            by how many times e.g. Caruana repeated one.
-        ensemble_pred: The strategy's final (weighted) prediction, shape (n_eval,).
-        y_eval: Ground truth, same order/length as `ensemble_pred`.
+        std: Per-sample predictive standard deviation, shape (n_eval,), or None
+            when undefined (e.g. the spread of a one-model "ensemble"), which
+            makes every sigma-based metric NaN.
+        pred: The predictor's point estimate, shape (n_eval,).
+        y_eval: Ground truth, same order/length as `pred`.
         clf_threshold: Cut used to derive the binary label for ECE/MCE.
         n_bins: Number of confidence bins for ECE/MCE.
 
     Returns:
         Dict with `mean_std`, `uncertainty_error_rho`, `coverage_1sigma`,
-        `coverage_2sigma`, `coverage_3sigma` (all NaN when fewer than 2 member
-        models -- spread is undefined for a single model), plus `clf_ece` and
-        `clf_mce` (always computed -- calibration doesn't need an ensemble).
+        `coverage_2sigma`, `coverage_3sigma` (all NaN when `std` is None), plus
+        `clf_ece` and `clf_mce` (always computed -- calibration of the point
+        estimate needs no sigma at all).
     """
-    abs_error = np.abs(y_eval - ensemble_pred)
+    abs_error = np.abs(y_eval - pred)
     out: Dict[str, float] = {}
 
-    if member_preds.shape[0] >= 2:
-        std = member_preds.std(axis=0)
+    if std is None:
+        out["mean_std"] = float("nan")
+        out["uncertainty_error_rho"] = float("nan")
+        for k in (1, 2, 3):
+            out[f"coverage_{k}sigma"] = float("nan")
+    else:
         out["mean_std"] = float(std.mean())
         out["uncertainty_error_rho"] = (
             float(spearmanr(std, abs_error)[0]) if np.ptp(std) > 0 else float("nan")
         )
         for k in (1, 2, 3):
             out[f"coverage_{k}sigma"] = float(np.mean(abs_error <= k * std))
-    else:
-        out["mean_std"] = float("nan")
-        out["uncertainty_error_rho"] = float("nan")
-        for k in (1, 2, 3):
-            out[f"coverage_{k}sigma"] = float("nan")
 
     y_bin = (y_eval >= clf_threshold).astype(float)
-    conf = np.clip(ensemble_pred, 1e-7, 1 - 1e-7)
+    conf = np.clip(pred, 1e-7, 1 - 1e-7)
     bin_edges = np.linspace(0, 1, n_bins + 1)
     ece, mce = 0.0, 0.0
     for i in range(n_bins):
@@ -720,23 +848,48 @@ def _ensemble_uncertainty_metrics(
     return out
 
 
+def _ensemble_uncertainty_metrics(
+    member_preds: np.ndarray, ensemble_pred: np.ndarray, y_eval: np.ndarray,
+    clf_threshold: float, n_bins: int = 10,
+) -> Dict[str, float]:
+    """`_uncertainty_metrics` with the sigma read off an ensemble's member spread.
+
+    Args:
+        member_preds: One row per distinct member model's raw prediction on
+            the evaluation split, shape (n_members, n_eval). Unweighted --
+            spread is read across the base learners themselves, not weighted
+            by how many times e.g. Caruana repeated one.
+        ensemble_pred: The strategy's final (weighted) prediction, shape (n_eval,).
+        y_eval: Ground truth, same order/length as `ensemble_pred`.
+        clf_threshold: Cut used to derive the binary label for ECE/MCE.
+        n_bins: Number of confidence bins for ECE/MCE.
+
+    Returns:
+        See `_uncertainty_metrics`; the sigma-based entries are NaN when fewer
+        than 2 distinct members contribute, since spread is undefined for one.
+    """
+    std = member_preds.std(axis=0) if member_preds.shape[0] >= 2 else None
+    return _uncertainty_metrics(std, ensemble_pred, y_eval, clf_threshold, n_bins)
+
+
 def _format_composition(weights: Dict[str, float]) -> str:
     """Compact per-backend model-count string, e.g. 'GNN:13,MLP:6,XGB:7'."""
     counts = Counter(k.split("_seed")[0] for k in weights)
     return ",".join(f"{b}:{n}" for b, n in sorted(counts.items(), key=lambda x: -x[1]))
 
 
-def _print_ensemble_table(df: pd.DataFrame, strategies: Dict[str, Dict[str, float]]) -> None:
+def _print_ensemble_table(df: pd.DataFrame, compositions: Dict[str, str]) -> None:
     """Print a compact command-line summary table for `run_ensemble_strategies`'s result.
 
     Args:
         df: The metrics DataFrame `run_ensemble_strategies` returns (indexed
             by strategy name).
-        strategies: strategy name -> {model_key: weight}, for the composition column.
+        compositions: strategy name -> per-backend model-count string, for the
+            composition column (see `_format_composition`).
     """
     display = pd.DataFrame({
         "n_models":    df["n_models"].astype(int),
-        "composition": [_format_composition(strategies[s]) for s in df.index],
+        "composition": [compositions.get(s, "") for s in df.index],
         "rmse":        df["rmse"].round(4),
         "r2":          df["r2"].round(3),
         "mean_std":    df["mean_std"].round(4),
@@ -749,13 +902,14 @@ def _print_ensemble_table(df: pd.DataFrame, strategies: Dict[str, Dict[str, floa
     }, index=df.index)
     print("\n" + display.to_string())
     print("  (expected coverage: 68.3% / 95.5% / 99.7% at 1σ/2σ/3σ; NaN = undefined for a "
-          "1-model ensemble; ECE/MCE treat the ensemble's raw prediction as P(synthesizable))")
+          "1-model ensemble; ECE/MCE treat the raw prediction as P(synthesizable))")
 
 
 def run_ensemble_strategies(
     fold_predictions: Dict[str, np.ndarray], y_true: np.ndarray, out_dir: Path,
     clf_threshold: float, caruana_sel_frac: float = 0.2,
     caruana_iterations: int = 100, random_seed: int = 42,
+    extra_predictors: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None,
 ) -> pd.DataFrame:
     """Score best_single / uniform / best_backend / Caruana ensembles over the fold-model pool.
 
@@ -780,15 +934,24 @@ def run_ensemble_strategies(
             strategy (including best_single/uniform/best_backend) is scored on.
         caruana_iterations: Greedy selection iterations (see `EnsembleSelector`).
         random_seed: Seed for the selection/evaluation split.
+        extra_predictors: Optional single models that carry their own
+            uncertainty, as name -> (prediction, sigma) over the FULL test set
+            (see `evidential_predictors`). They take no part in the ensembles;
+            they are sliced onto the same evaluation split and scored through
+            the same metrics, so their uncertainty lands in the same table --
+            on the same rows -- as the ensembles' member spread.
 
     Returns:
-        DataFrame of metrics (one row per strategy, from `compute_all_metrics`
-        plus `n_models` and the `_ensemble_uncertainty_metrics` columns),
-        indexed by strategy name; also written to
-        `{out_dir}/ensemble_strategies.csv` and printed as a table.
+        DataFrame of metrics (one row per strategy and per extra predictor,
+        from `compute_all_metrics` plus `n_models` and the
+        `_uncertainty_metrics` columns), indexed by strategy name; also written
+        to `{out_dir}/ensemble_strategies.csv`, reduced to
+        `{out_dir}/uncertainty_comparison.csv`, and printed as a table.
 
     Raises:
         RuntimeError: If `fold_predictions` is empty.
+        ValueError: If an `extra_predictors` array doesn't cover the same rows
+            as `y_true`.
     """
     if not fold_predictions:
         raise RuntimeError("No fold-model predictions to build ensembles from.")
@@ -833,7 +996,7 @@ def run_ensemble_strategies(
     strategies["caruana"] = selector.greedy_selection(sel_preds, y_true[sel_idx], n_iterations=caruana_iterations)
 
     print("\n── Ensemble strategies (scored on the shared evaluation split) ─────────")
-    rows = []
+    rows, compositions = [], {}
     for name, weights in strategies.items():
         pred = np.zeros(len(y_eval))
         for k, w in weights.items():
@@ -843,7 +1006,9 @@ def run_ensemble_strategies(
         metrics.update(_ensemble_uncertainty_metrics(member_preds, pred, y_eval, clf_threshold))
         metrics["n_models"] = len(weights)
         metrics["strategy"] = name
+        metrics["uncertainty_source"] = "member spread"
         rows.append(metrics)
+        compositions[name] = _format_composition(weights)
 
         by_backend = Counter(k.split("_seed")[0] for k in weights)
         print(f"  {name:<12} n_models={len(weights):<3} rmse={metrics['rmse']:.4f}  "
@@ -853,9 +1018,36 @@ def run_ensemble_strategies(
             "n_selection_samples": len(sel_idx), "n_evaluation_samples": len(eval_idx),
         })
 
+    # single models with a predicted uncertainty of their own (the evidential
+    # GNN), scored on the very same evaluation rows as the ensembles above
+    for name, (full_pred, full_std) in (extra_predictors or {}).items():
+        if len(full_pred) != n or len(full_std) != n:
+            raise ValueError(
+                f"extra predictor {name!r} covers {len(full_pred)} rows but the fold "
+                f"predictions cover {n}; both must come from the same test CSV."
+            )
+        pred, std = np.asarray(full_pred)[eval_idx], np.asarray(full_std)[eval_idx]
+        metrics = _score(pred)
+        metrics.update(_uncertainty_metrics(std, pred, y_eval, clf_threshold))
+        metrics["n_models"] = 1
+        metrics["strategy"] = name
+        metrics["uncertainty_source"] = "predicted"
+        rows.append(metrics)
+        compositions[name] = "evidential:1"
+        print(f"  {name:<12} n_models=1   rmse={metrics['rmse']:.4f}  "
+              f"r2={metrics['r2']:.4f}  uncertainty=predicted ({compositions[name]})")
+
     df = pd.DataFrame(rows).set_index("strategy")
     df.to_csv(out_dir / "ensemble_strategies.csv")
-    _print_ensemble_table(df, strategies)
+    _print_ensemble_table(df, compositions)
+
+    # focused view of the same rows: how well does each sigma -- however it was
+    # obtained -- track the error it is supposed to predict?
+    unc_cols = ["uncertainty_source", "n_models", "rmse", "mean_std",
+                "uncertainty_error_rho", "coverage_1sigma", "coverage_2sigma",
+                "coverage_3sigma", "clf_ece", "clf_mce"]
+    df[unc_cols].sort_values("uncertainty_error_rho", ascending=False).to_csv(
+        out_dir / "uncertainty_comparison.csv")
     return df
 
 
@@ -919,7 +1111,7 @@ def main() -> None:
             predictions, results = evaluate_test(
                 args.models, args.test_csv, models_dir, cfg,
                 smiles_col, target_col, cfg.hpo.classification_threshold,
-                X_fp=X_fp, X_desc=X_desc,
+                X_fp=X_fp, X_desc=X_desc, device=args.device,
             )
             with open(test_pred_path, "wb") as f:
                 pickle.dump(predictions, f)
@@ -931,12 +1123,26 @@ def main() -> None:
                 args.models, args.test_csv, cv_dir, cfg, smiles_col, target_col,
                 cfg.cross_validation.seeds, cfg.cross_validation.n_folds,
                 out_dir, force=args.force_predict, X_fp=X_fp, X_desc=X_desc,
+                device=args.device,
             )
+
+            extra_predictors = None
+            if args.evidential_model:
+                print(f"\n[2b'/3] Predicting test set with the evidential model "
+                      f"'{args.evidential_model}' (its own uncertainty)...")
+                evidential = predict_evidential(
+                    args.evidential_model, args.test_csv, models_dir,
+                    smiles_col, target_col, out_dir,
+                    device=args.device, force=args.force_predict,
+                )
+                extra_predictors = evidential_predictors(evidential)
+
             print("\n[2c/3] Scoring ensemble strategies...")
             run_ensemble_strategies(
                 fold_predictions, y_true_folds, out_dir, cfg.hpo.classification_threshold,
                 caruana_sel_frac=args.ensemble_caruana_frac,
                 caruana_iterations=args.ensemble_iterations,
+                extra_predictors=extra_predictors,
             )
     else:
         print("\n[2/3] No --test-csv given; skipping test-set evaluation.")
