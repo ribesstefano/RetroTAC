@@ -1,0 +1,171 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+# Standalone external tool, NOT a `pyproject.toml` extra of this project:
+# bakes in Zhang-Ran-0119/DeepPSA (https://github.com/Zhang-Ran-0119/DeepPSA),
+# a geometric-deep-learning PROTAC synthetic-accessibility scorer, for use as
+# one more external synthesizability score alongside the SA/SC/RA/SYBA/GASA/FS
+# stack in retro_scores/. Unlike inference.def/training.def/scoring.def, this
+# image has no %files section -- nothing here depends on
+# retrotac/scripts/config, so apptainer/bind_live_repo.sh is not needed (and
+# does nothing useful) for this container. See apptainer/README.md for the
+# general five-decision recipe the other three follow; this file deviates
+# from decisions 2/3 (uv + `--extra <name>`) for the reason below.
+#
+# DeepPSA's own environment.yaml is a full `conda env export`, not a plain
+# pip requirements list: several of its pins (openbabel, boost, oddt, dgl
+# with CUDA-specific build strings) are conda-only builds with no clean pip
+# wheel on Linux, so this replays that file via mamba rather than
+# hand-translating it to uv/pip -- same reasoning as scoring.def's
+# venv-scoring half (retro_scores/README.md: "a flat pip install -r does not
+# solve"), just via conda instead of staged pip pins since DeepPSA ships a
+# conda export, not a pip one.
+#
+# DeepPSA's Academic Free Licence permits academic use only, not unauthorised
+# commercial use -- see /opt/deeppsa/LICENSE inside the built image.
+
+%post
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl git git-lfs build-essential libxrender1 libxext6 libsm6
+    rm -rf /var/lib/apt/lists/*
+
+    # ---- mamba (Miniforge3) -- parallel to how uv is curl-installed in the
+    # other three .def files, but this stack needs conda's own package
+    # builds (openbabel, boost, dgl, ...), not just a Python interpreter +
+    # pip wheels.
+    curl -L -o /tmp/miniforge.sh \
+        https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
+    bash /tmp/miniforge.sh -b -p /opt/miniforge3
+    rm -f /tmp/miniforge.sh
+    export PATH="/opt/miniforge3/bin:${PATH}"
+
+    # ---- clone DeepPSA. A plain `git clone` (unlike `pip install git+URL`,
+    # see apptainer/README.md's "1d") DOES smudge Git LFS content correctly,
+    # so this pulls the real checkpoint weights, not the ~130-byte pointer
+    # stubs the repo shows over a non-LFS-aware clone.
+    git lfs install --skip-repo
+    git clone --depth 1 https://github.com/Zhang-Ran-0119/DeepPSA.git /opt/deeppsa
+
+    # Fail loudly at build time, not at first inference, if LFS didn't
+    # smudge (e.g. an LFS bandwidth/quota hiccup) -- a real checkpoint is
+    # tens of MB, the pointer stub is ~130 bytes.
+    ckpt_size=$(stat -c%s /opt/deeppsa/PSA/FinetuneModel.pth)
+    if [ "$ckpt_size" -lt 10000 ]; then
+        echo "PSA/FinetuneModel.pth is only ${ckpt_size} bytes -- still an LFS pointer stub, not the real checkpoint" >&2
+        exit 1
+    fi
+
+    # Upstream bug in Zhang-Ran-0119/DeepPSA (confirmed by actually running
+    # PSA.py on a CPU-only host, not from the clone succeeding): its
+    # torch.load('PSA/FinetuneModel.pth') call passes no map_location, so it
+    # always tries to deserialize the checkpoint (saved from CUDA tensors)
+    # onto a CUDA device and crashes outright -- even though the very next
+    # lines already compute the right `device` (cuda if available, else cpu)
+    # and use it for everything else. One-line patch: route torch.load
+    # through that same `device` variable, so CPU-only hosts work too (same
+    # shape of fix as GASA's errno patch in scoring.def).
+    sed -i "s|torch.load('PSA/FinetuneModel.pth')|torch.load('PSA/FinetuneModel.pth', map_location=device)|" \
+        /opt/deeppsa/PSA.py
+    grep -q "map_location=device" /opt/deeppsa/PSA.py || { echo "PSA.py map_location patch did not apply" >&2; exit 1; }
+
+    # ---- replay DeepPSA's own pinned conda env at an explicit prefix, kept
+    # OUTSIDE /opt/deeppsa so a future live-dev bind-mount over /opt/deeppsa
+    # (were one ever set up) can't bury it -- same principle as
+    # apptainer/README.md's "4" (venv lives outside the code it serves).
+    # CONDA_OVERRIDE_CUDA: the build runs with no GPU visible (--fakeroot
+    # doesn't pass --nv), so mamba's solver can't detect the __cuda virtual
+    # package that environment.yaml's cudatoolkit=11.8/pytorch/tensorflow
+    # builds require and fails with "invalid section(s)"-unrelated but
+    # equally opaque "requires __cuda, which is missing on the system"
+    # errors. This tells the solver to assume CUDA 11.8 is present, same
+    # spirit as this repo's own note that a GPU job only needs the host
+    # driver via --nv at run time, not at build time -- the CUDA runtime
+    # itself is already bundled in these conda packages.
+    export CONDA_OVERRIDE_CUDA=11.8
+    mamba env create -f /opt/deeppsa/environment.yaml -p /opt/conda-deeppsa
+    mamba clean -afy
+
+%environment
+    export PATH=/opt/conda-deeppsa/bin:/opt/miniforge3/bin:${PATH}
+
+%runscript
+    cd /opt/deeppsa
+    exec python "$@"
+
+%apprun predict
+    # PSA.py hardcodes cwd-relative paths (checkpoint at
+    # PSA/FinetuneModel.pth, a data_process/mytest/ graph cache, and its
+    # result.csv output), so it must run from a writable copy of
+    # /opt/deeppsa. --writable-tmpfs looked like the fit (same pattern as
+    # GASA in scoring.def) but isn't: its overlay is a small, RAM-backed
+    # tmpfs (confirmed 16M default by actually running a real ~2200-row
+    # test set, not the earlier 3-molecule smoke test -- DGL's graph cache
+    # blew straight through it, "OSError: [Errno 28] No space left on
+    # device" writing the *final* result.csv). /tmp, unlike /opt, is
+    # already real host-backed disk inside the container by default (no
+    # --writable-tmpfs needed -- apptainer bind-mounts it in), so this
+    # symlinks the whole DeepPSA tree into a scratch dir under /tmp instead
+    # (cp -rs: symlinks, not copies, so the ~560MB of checkpoint weights
+    # cost nothing) and runs from there. New files (the graph cache,
+    # result.csv) land as real files on that real disk; reads of the
+    # checkpoint through the symlink are unaffected by it being read-only.
+    set -eu
+    if [ "$#" -ne 2 ]; then
+        echo "usage: apptainer run --app predict deeppsa.sif <input.csv> <output.csv>" >&2
+        exit 1
+    fi
+    INPUT=$(readlink -f "$1")
+    # Resolve OUTPUT to an absolute path too, and before the cd below --
+    # confirmed by actually running this against a real dataset, not just
+    # the earlier smoke test: a relative output path (the natural way to
+    # call this) silently resolved against $SCRATCH instead of the
+    # caller's own directory once the script cd'd there, so `cp -f
+    # result.csv "$OUTPUT"` failed with a "No such file or directory" that
+    # only shows up after the (potentially slow) prediction step already
+    # ran to completion.
+    OUTPUT=$(readlink -f "$2" 2>/dev/null) || { echo "output directory for '$2' does not exist" >&2; exit 1; }
+    SCRATCH=$(mktemp -d /tmp/deeppsa-predict.XXXXXX)
+    trap 'rm -rf "$SCRATCH"' EXIT
+    cp -rs /opt/deeppsa/. "$SCRATCH/"
+    cd "$SCRATCH"
+    python PSA.py "$INPUT"
+    cp -f result.csv "$OUTPUT"
+
+%labels
+    profile deeppsa
+    upstream https://github.com/Zhang-Ran-0119/DeepPSA
+
+%help
+    DeepPSA container: geometric-deep-learning PROTAC synthetic-accessibility
+    scorer from https://github.com/Zhang-Ran-0119/DeepPSA, run standalone --
+    not part of this project's own pyproject.toml extras (see the header
+    comment in this file for why).
+
+    Build (from the repo root; slow -- several GB of conda-forge/PyPI/GitHub
+    downloads. Needs the login node's internet access -- compute nodes
+    reached via SLURM have none, so never run this inside an sbatch job; see
+    slurm/build_deeppsa_sif.sh for a login-node background build):
+        apptainer build --fakeroot apptainer/deeppsa.sif apptainer/deeppsa.def
+
+    Run inference with the pretrained+finetuned model. Input CSV needs
+    'smiles' and 'labels' columns -- DeepPSA's own data loader requires a
+    labels column even for pure inference; fill it with dummy 0s if you
+    don't have ground truth. No --writable-tmpfs needed (see the predict
+    app's comment above in this file -- it runs from a real-disk scratch
+    dir under /tmp instead); add --nv only if you want it on GPU (device is
+    auto-detected via torch.cuda.is_available(), falls back to CPU
+    otherwise):
+        apptainer run --app predict apptainer/deeppsa.sif \
+            data/deeppsa/input.csv data/deeppsa/output.csv
+
+    Output columns: smiles, es (easy-to-synthesize score), hs
+    (hard-to-synthesize score), lable_pre (predicted class -- DeepPSA's own
+    spelling, not a typo introduced here).
+
+    License: DeepPSA is released under the Academic Free Licence -- academic
+    use, modification, and redistribution are permitted; unauthorised
+    commercial use is not. See /opt/deeppsa/LICENSE inside the image, or
+    https://github.com/Zhang-Ran-0119/DeepPSA/blob/main/LICENSE.

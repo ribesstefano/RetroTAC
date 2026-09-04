@@ -2,6 +2,8 @@
 
 Work in progress repository to train a surrogate model for predicting PROTAC synthesizability.
 
+## Quickstart
+
 ## Notes on Implementation
 
 We do not enforce the output of the model between 0 and 1, so that if the model would predict a score outside of that range, it would mean that the input is very different from the training data.
@@ -11,6 +13,18 @@ We do not enforce the output of the model between 0 and 1, so that if the model 
 ### Create Containers
 
 **TODO**
+
+### Remove Duplicates
+
+```bash
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/dataset/dedupe_routes.py data/sets/routes_train_val.csv \
+    --output data/sets/routes_train_val_deduped.csv
+
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/dataset/dedupe_routes.py data/sets/routes_test.csv \
+    --output data/sets/routes_test_deduped.csv
+```
 
 ### Add Component Splits
 
@@ -33,6 +47,25 @@ apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
   --make-figures --n-figure-mols 20
 ```
 
+Results:
+
+```
+=== Target column 'synthesizability' distribution: train_val vs. held-out test ===
+|       |    train_val |        test |
+|-------|--------------|-------------|
+| count | 16957        | 2317        |
+| mean  |     0.628137 |    0.565406 |
+| std   |     0.205122 |    0.220906 |
+| min   |     0        |    0        |
+| 25%   |     0.588969 |    0.547734 |
+| 50%   |     0.659037 |    0.614444 |
+| 75%   |     0.723995 |    0.679516 |
+| max   |     1        |    1        |
+
+Two-sample Kolmogorov-Smirnov test: statistic=0.1817, p-value=2.379e-59
+-> p-value < 0.05: distributions look significantly different (alpha=0.05).
+```
+
 ### Check Scaffold Leakage
 
 If we use a standard random split or a whole-molecule scaffold split (which often degenerates into random splits for large PROTACs), identical warhead scaffolds will appear in both the training and test sets. The model will not learn the underlying physical or topological rules of synthesizability; it will simply memorize a lookup table (e.g., "If I detect this warhead scaffold, predict 3.8").
@@ -43,6 +76,48 @@ By calculating $\eta^2$ for the warhead, linker, and E3 separately, we identify 
 - If $\eta^2 = 1$: The variance within any given group is zero. Every single PROTAC that shares a specific warhead scaffold has the exact same synthesizability score. The scaffold deterministically drives the label.
 
 $\eta^2$ is chosen because it is the mathematically correct metric for quantifying the association between an unordered categorical independent variable (a scaffold string like "c1ccccc1") and a continuous dependent variable (a numerical synthesizability score).
+
+Results:
+
+```
+target,key,eta_squared
+synthesizability,whole,0.8859344419834448
+synthesizability,warhead,0.5827470629184318
+synthesizability,linker,0.3525014626051836
+synthesizability,e3,0.27743465520216015
+synthesizability,warhead+linker,0.798453065400528
+synthesizability,warhead&linker,0.06979129230192355
+synthesizability,warhead+e3,0.7568373028362548
+synthesizability,warhead&e3,0.006271976829004205
+synthesizability,linker+e3,0.6044256755154074
+synthesizability,linker&e3,0.05230254828461978
+synthesizability,warhead+linker+e3,0.9037746083541545
+synthesizability,warhead&linker&e3,0.0019115402240683253
+sa_score,whole,0.9970206883412824
+sa_score,warhead,0.8566643980652069
+sa_score,linker,0.6284815208273701
+sa_score,e3,0.539891909155749
+sa_score,warhead+linker,0.9652296466605644
+sa_score,warhead&linker,0.03894280878359409
+sa_score,warhead+e3,0.9666769440807902
+sa_score,warhead&e3,0.005177154475371922
+sa_score,linker+e3,0.8827291046162513
+sa_score,linker&e3,0.04760337611889264
+sa_score,warhead+linker+e3,0.997715102423081
+sa_score,warhead&linker&e3,0.0012602337930609474
+struct_n_steps,whole,0.933491230140189
+struct_n_steps,warhead,0.6232656995972287
+struct_n_steps,linker,0.46842292773097083
+struct_n_steps,e3,0.37368564277861804
+struct_n_steps,warhead+linker,0.841657493442911
+struct_n_steps,warhead&linker,0.06783959367942659
+struct_n_steps,warhead+e3,0.8225811790484079
+struct_n_steps,warhead&e3,0.007042937538862088
+struct_n_steps,linker+e3,0.7476329228522339
+struct_n_steps,linker&e3,0.046089111937971675
+struct_n_steps,warhead+linker+e3,0.9437826196950361
+struct_n_steps,warhead&linker&e3,0.0005432755186201766
+```
 
 In code:
 
@@ -157,6 +232,77 @@ apptainer exec --nv $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
 ENSEMBLE=1 ENSEMBLE_ITERATIONS=200 sbatch slurm/evaluate.sh   # skips load/predict, reuses cv_fold_test_predictions.pkl
 ```
 
+#### Compare Evidential vs. Ensembles
+
+```bash
+apptainer exec --nv $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/models/evaluation.py \
+    --models xgb_20260828_182305 mlp_20260828_182305 gnn_20260828_182305 \
+    --config config/models_config_routes.yaml --output-root outputs \
+    --test-csv data/sets/routes_test.csv --ensemble \
+    --evidential-model gnn_routes_evidential --out uncertainty
+```
+
+### Push to HuggingFace
+
+```bash
+# Push to HF (local staging)
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/inference.sif \
+  python scripts/models/push_to_hf.py \
+    --weights outputs/results/results_20260828_182305/ensemble_weights_caruana.json \
+    --cv-dir outputs/cv --local-dir retrotac_staged
+
+# Push to HF (remote)
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/inference.sif \
+  python scripts/models/push_to_hf.py \
+    --weights outputs/results/results_20260828_182305/ensemble_weights_caruana.json \
+    --cv-dir outputs/cv \
+    --private \
+    --repo-id ailab-bio/RetroTAC
+```
+
+### Compare to DeepPSA
+
+Exclude DeepPSA training data from our held-out set:
+
+```bash
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/deeppsa/prepare_test_set.py
+```
+
+Run DeepPSA inference on the held-out test set:
+
+```bash
+apptainer run --writable-tmpfs --app predict apptainer/deeppsa.sif \
+    data/deeppsa/shared_test_set/shared_test_set.csv data/deeppsa/deeppsa_preds.csv
+
+# OR, with GPU support:
+srun -A berzelius-2026-62 -p berzelius --gpus=1 --time=00:30:00 --pty \
+  apptainer run --nv --writable-tmpfs --app predict apptainer/deeppsa.sif \
+    data/deeppsa/shared_test_set/shared_test_set.csv data/deeppsa/deeppsa_preds.csv
+```
+
+Run RetroTAC inference on the same held-out test set:
+
+```bash
+srun -A berzelius-2026-62 -p berzelius --gpus=1 --time=00:30:00 --pty \
+apptainer exec --nv $(bash apptainer/bind_live_repo.sh) apptainer/inference.sif \
+  python retrotac/cli.py \
+    --input data/deeppsa/shared_test_set/shared_test_set.csv \
+    --output data/deeppsa/retrotac_preds.csv \
+    --smiles-col smiles \
+    --batch-size 512 \
+    --device cuda \
+    --verbose
+```
+
+We need to compare the predictions, remembering that 0 is easy and 1 is hard for DeepPSA, while 0 is hard and 1 is easy for our model. So we need to invert the DeepPSA predictions before calculating the correlation.
+
+- get correlation between true real values and categorical DeepPSA predictions
+- get correlation between RetroTAC predicted real values and categorical DeepPSA predictions
+
+We expect/hope to see a low correlation true/DeepPSA and so a low one for RetroTAC/DeepPSA as well.
+
 ## Results
 
 ```
@@ -209,4 +355,11 @@ uniform             75  XGB:25,MLP:25,GNN:25  0.1346  0.633    0.0693        0.3
 best_backend        25                GNN:25  0.1332  0.641    0.0481        0.369        38.2        66.6        82.0   37.5   52.5
 caruana             27    GNN:13,MLP:7,XGB:7  0.1320  0.647    0.0675        0.337        47.0        72.9        84.4   36.5   52.6
   (expected coverage: 68.3% / 95.5% / 99.7% at 1σ/2σ/3σ; NaN = undefined for a 1-model ensemble; ECE/MCE treat the ensemble's raw prediction as P(synthesizable))
+```
+
+## Negative Data
+
+```bash
+apptainer exec --nv $(bash apptainer/bind_live_repo.sh) apptainer/inference.sif \
+  python scripts/negative_data/predict_synthetic_data.py
 ```

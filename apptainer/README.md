@@ -1,13 +1,16 @@
 # Apptainer containers
 
-Three container images, one per `pyproject.toml` optional-dependency group
-(the mapping is stated at the top of `pyproject.toml`): `inference.def`
-(default profile, no extra — what most users need), `training.def` (`--extra
-training`), `scoring.def` (`--extra scoring` + the separate `scoring_env`
-stack from `retro_scores/README.md`). All three also install `--extra
-notebooks` (jupyter/jupyterlab/ipywidgets), so any of them can run a Jupyter
-server for interactive development — see "Developing against a container"
-below. Each builds to a single `.sif` file regardless of how many
+Four container images. Three map 1:1 onto a `pyproject.toml`
+optional-dependency group (the mapping is stated at the top of
+`pyproject.toml`): `inference.def` (default profile, no extra — what most
+users need), `training.def` (`--extra training`), `scoring.def` (`--extra
+scoring` + the separate `scoring_env` stack from `retro_scores/README.md`).
+All three also install `--extra notebooks` (jupyter/jupyterlab/ipywidgets),
+so any of them can run a Jupyter server for interactive development — see
+"Developing against a container" below. The fourth, `deeppsa.def`, doesn't
+fit that mold at all — it bakes in an unrelated external tool via its own
+conda environment, not a `uv sync --extra`; see "Adding a new profile"
+below for why. Each builds to a single `.sif` file regardless of how many
 packages/files it holds — that's the actual point: `uv sync`/`mamba create`
 on Berzelius can produce tens of thousands of small files per environment,
 which is what blows a `$HOME` file-count quota. A squashfs-packed `.sif` is
@@ -20,8 +23,8 @@ commands below; each machine/cluster should build its own anyway, since a
 this project's `uv.lock`.
 
 This doc has two parts: the general recipe (skip to "Adding a new profile"
-if you just want to add a fourth container later) and the concrete
-build/run instructions for the three that already exist.
+if you just want to add another container later) and the concrete
+build/run instructions for the four that already exist.
 
 ## The general recipe
 
@@ -168,7 +171,21 @@ apptainer build --build-arg EXTRA=training --fakeroot custom.sif extras.def
 Not used here since three named, stable files are easier to find and to
 reference from `slurm/*.sh` than a build-arg someone has to remember.
 
-## Building and running the three containers
+**A profile doesn't have to fit the `pyproject.toml`-extra mold.**
+`deeppsa.def` bakes in an entirely separate external tool
+([Zhang-Ran-0119/DeepPSA](https://github.com/Zhang-Ran-0119/DeepPSA)) that
+isn't part of this project's own dependency tree at all: it has no `%files`
+section (nothing in it depends on `retrotac`/`scripts`/`config`, so
+`bind_live_repo.sh` does nothing useful there), and it replays the upstream
+tool's own `environment.yaml` via mamba/conda instead of `uv sync --extra
+...`, since that file is a full `conda env export` with conda-only package
+builds (openbabel, boost, dgl with CUDA-specific build strings) that don't
+have clean pip equivalents. Decisions 1/1a-1e/4/5 above still apply; only
+2/3 (uv, `--extra <name>`) are swapped out. Use it as the template for a
+future profile that vendors another external tool rather than adding a
+`pyproject.toml` extra of this project's own.
+
+## Building and running the containers
 
 Run every command below **from the repo root** — `%files` paths in a `.def`
 are resolved relative to the build's working directory, not the `.def`
@@ -178,6 +195,7 @@ file's location.
 apptainer build --fakeroot apptainer/inference.sif apptainer/inference.def
 apptainer build --fakeroot apptainer/training.sif  apptainer/training.def
 apptainer build --fakeroot apptainer/scoring.sif   apptainer/scoring.def   # slow: several GB, two git clones
+apptainer build --fakeroot apptainer/deeppsa.sif   apptainer/deeppsa.def   # slow: several GB, conda + two git clones
 ```
 
 If `--fakeroot` isn't permitted for your account (`apptainer build
@@ -187,7 +205,10 @@ you do have root or `--fakeroot` (a laptop, a VM) and copy the resulting
 needs `apptainer remote login` against a build endpoint first). Berzelius'
 login node has outbound internet, which is what these builds need (PyPI/git
 downloads); compute nodes reached via SLURM do not, so builds must happen on
-the login node or off-cluster, never inside a SLURM job.
+the login node or off-cluster, never inside a SLURM job — for the slower
+`deeppsa.sif` build specifically, `slurm/build_deeppsa_sif.sh` wraps the
+command above as a `nohup`-backgrounded login-node script so it can run
+unattended overnight without an actual (non-functional) SLURM submission.
 
 Each `.def`'s `%help` (`apptainer run-help apptainer/<name>.sif`) has
 copy-pasteable examples; the short version:
@@ -212,6 +233,14 @@ apptainer run --app score-route $(bash apptainer/bind_live_repo.sh) \
 # FSscore, --writable-tmpfs for GASA -- see "The general recipe" 1e)
 apptainer run --nv --writable-tmpfs --app score-mol-heavy $(bash apptainer/bind_live_repo.sh) \
     apptainer/scoring.sif data/raw/input.csv data/synth_scores/output.csv --smiles-col molecule
+
+# DeepPSA -- standalone external scorer, no bind_live_repo.sh needed (see
+# "Adding a new profile" above); no --writable-tmpfs needed (its own code
+# writes result.csv/graph cache next to itself, but the predict app runs
+# from a real-disk scratch dir under /tmp instead -- see apptainer/deeppsa.def),
+# --nv is optional (GPU auto-detected)
+apptainer run --app predict apptainer/deeppsa.sif \
+    data/deeppsa/input.csv data/deeppsa/output.csv
 ```
 
 Without `--app`, `apptainer run` uses `%runscript`, which just runs
