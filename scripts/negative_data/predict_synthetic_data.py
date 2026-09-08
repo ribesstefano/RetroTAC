@@ -20,11 +20,10 @@ standardization/overlap-removal when it's already there (pass
 --recompute-prepared to force redoing it, e.g. after --data-dir/--train-csv
 change).
 
-Two "interesting" subsets are isolated from the tails of the prediction
-distribution: confident extreme predictions (low ensemble uncertainty --
-likely-correct hard positives/negatives, candidates for negative-data mining)
-and uncertain ones (high ensemble uncertainty -- candidates for manual
-curation, cf. dataset-curated-held-out.csv).
+This script only gathers predictions (--output-dir/predictions.csv). Summary
+statistics, plots, and isolating the confident/uncertain tails of the
+distribution are a separate step -- see isolate_synthetic_data_preds.py,
+which reads the predictions.csv this script writes.
 
 Only the gnn ensemble members (13 of 27) honor --device; the mlp members
 always run on CPU (TorchMLPRegressor.load() has no device parameter) and the
@@ -41,14 +40,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Tuple
 
 import pandas as pd
 import torch
-from matplotlib import pyplot as plt
 
 from retrotac.chem_utils import papply, std_smiles
 
@@ -210,135 +207,6 @@ def get_predictions(
     return scored[scored[PROTAC_COL].isin(set(df[PROTAC_COL]))].reset_index(drop=True)
 
 
-def predictions_summary(df: pd.DataFrame, outdir: Path) -> None:
-    """Write summary statistics of the predictions/uncertainty to a JSON file.
-
-    Args:
-        df: Scored DataFrame with "prediction" and "uncertainty" columns.
-        outdir: Directory to write predictions_summary.json to.
-    """
-    quantiles = (0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99)
-
-    def _stats(s: pd.Series) -> dict:
-        return {
-            "mean": float(s.mean()),
-            "std": float(s.std()),
-            "min": float(s.min()),
-            "max": float(s.max()),
-            "median": float(s.median()),
-            "quantiles": {str(q): float(s.quantile(q)) for q in quantiles},
-        }
-
-    summary = {
-        "n_molecules": len(df),
-        "prediction": _stats(df["prediction"]),
-        "uncertainty": _stats(df["uncertainty"]),
-        "pearson_prediction_uncertainty": float(df["prediction"].corr(df["uncertainty"])),
-    }
-    if "source_file" in df.columns:
-        summary["by_source_file"] = (
-            df.groupby("source_file")["prediction"].agg(["count", "mean", "std"]).to_dict("index")
-        )
-
-    outdir.mkdir(parents=True, exist_ok=True)
-    out_path = outdir / "predictions_summary.json"
-    out_path.write_text(json.dumps(summary, indent=2))
-    print(f"  wrote {out_path}")
-
-
-def plot_predictions(df: pd.DataFrame, outdir: Path) -> None:
-    """Plot and save prediction/uncertainty distributions.
-
-    Args:
-        df: Scored DataFrame with "prediction" and "uncertainty" columns.
-        outdir: Directory to write the PNG plots to.
-    """
-    outdir.mkdir(parents=True, exist_ok=True)
-
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.hist(df["prediction"].dropna(), bins=50, color="#4C72B0")
-    ax.set_xlabel("Predicted synthesizability")
-    ax.set_ylabel("Count")
-    ax.set_title("Distribution of predicted synthesizability")
-    fig.tight_layout()
-    fig.savefig(outdir / "prediction_distribution.png", dpi=150)
-    plt.close(fig)
-
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.hist(df["uncertainty"].dropna(), bins=50, color="#DD8452")
-    ax.set_xlabel("Ensemble uncertainty (std across members)")
-    ax.set_ylabel("Count")
-    ax.set_title("Distribution of ensemble uncertainty")
-    fig.tight_layout()
-    fig.savefig(outdir / "uncertainty_distribution.png", dpi=150)
-    plt.close(fig)
-
-    fig, ax = plt.subplots(figsize=(6, 5))
-    ax.scatter(df["prediction"], df["uncertainty"], s=4, alpha=0.3, color="#55A868")
-    ax.set_xlabel("Predicted synthesizability")
-    ax.set_ylabel("Ensemble uncertainty")
-    ax.set_title("Prediction vs. uncertainty")
-    fig.tight_layout()
-    fig.savefig(outdir / "prediction_vs_uncertainty.png", dpi=150)
-    plt.close(fig)
-
-    print(f"  wrote plots to {outdir}")
-
-
-def _tail_mask(df: pd.DataFrame, pct_tail: float) -> pd.Series:
-    """Boolean mask selecting rows in the bottom/top pct_tail of "prediction"."""
-    lo = df["prediction"].quantile(pct_tail)
-    hi = df["prediction"].quantile(1 - pct_tail)
-    return (df["prediction"] <= lo) | (df["prediction"] >= hi)
-
-
-def isolate_confident_predictions(
-    df: pd.DataFrame, threshold: Optional[float] = None, pct_tail: float = 0.1
-) -> pd.DataFrame:
-    """Isolate low-uncertainty predictions in the tails of the score distribution.
-
-    These are the rows the ensemble both agrees on (low uncertainty) and is
-    most decisive about (extreme predicted score) -- good candidates for
-    confidently-labeled negative/positive data.
-
-    Args:
-        df: Scored DataFrame with "prediction" and "uncertainty" columns.
-        threshold: Uncertainty must be <= this to count as confident. If
-            None, defaults to the median uncertainty in df.
-        pct_tail: Fraction defining each tail of the prediction distribution
-            (e.g. 0.1 keeps the bottom and top deciles).
-
-    Returns:
-        Rows satisfying both conditions, sorted by "prediction".
-    """
-    threshold = float(df["uncertainty"].median()) if threshold is None else threshold
-    mask = _tail_mask(df, pct_tail) & (df["uncertainty"] <= threshold)
-    return df[mask].sort_values("prediction").reset_index(drop=True)
-
-
-def isolate_uncertain_predictions(
-    df: pd.DataFrame, threshold: Optional[float] = None, pct_tail: float = 0.1
-) -> pd.DataFrame:
-    """Isolate high-uncertainty predictions in the tails of the score distribution.
-
-    These are rows the ensemble is decisive about on average but disagrees on
-    internally -- good candidates for manual curation (cf.
-    dataset-curated-held-out.csv) rather than automated negative-data mining.
-
-    Args:
-        df: Scored DataFrame with "prediction" and "uncertainty" columns.
-        threshold: Uncertainty must be >= this to count as uncertain. If
-            None, defaults to the median uncertainty in df.
-        pct_tail: Fraction defining each tail of the prediction distribution.
-
-    Returns:
-        Rows satisfying both conditions, sorted by "prediction".
-    """
-    threshold = float(df["uncertainty"].median()) if threshold is None else threshold
-    mask = _tail_mask(df, pct_tail) & (df["uncertainty"] >= threshold)
-    return df[mask].sort_values("prediction").reset_index(drop=True)
-
-
 def resolve_device(requested: Optional[str]) -> str:
     """Resolve the compute device for the gnn ensemble members.
 
@@ -398,16 +266,12 @@ def parse_args() -> argparse.Namespace:
                           "own minibatch, independent of --batch-size); raise (e.g. 256-512, watch "
                           "GPU memory) for better GPU utilization")
     ap.add_argument("--output-dir", type=Path, default=Path("outputs/negative_data"),
-                     help="directory to write predictions, summary, plots, and isolated subsets to")
+                     help="directory to write the prepared data and predictions.csv to")
     ap.add_argument("--no-resume", dest="resume", action="store_false",
                      help="ignore any existing predictions.csv and rescore everything")
     ap.add_argument("--recompute-prepared", action="store_true",
                      help="ignore any existing synthetic_standardized.csv and redo loading/"
                           "standardization/train-overlap removal from scratch")
-    ap.add_argument("--pct-tail", type=float, default=0.1,
-                     help="fraction of each tail of the prediction distribution to isolate")
-    ap.add_argument("--uncertainty-threshold", type=float, default=None,
-                     help="uncertainty split point for confident/uncertain subsets; default: median")
     ap.add_argument("--limit", type=int, default=None,
                      help="only score the first N molecules after filtering (for smoke-testing)")
     return ap.parse_args()
@@ -455,19 +319,9 @@ def main() -> None:
         df, model, args.batch_size, args.output_dir,
         resume=args.resume, n_jobs=args.n_jobs, gnn_batch_size=args.gnn_batch_size,
     )
-
-    print("Writing predictions summary...")
-    predictions_summary(df, args.output_dir)
-
-    print("Plotting predictions...")
-    plot_predictions(df, args.output_dir)
-
-    print("Isolating confident and uncertain predictions...")
-    confident = isolate_confident_predictions(df, args.uncertainty_threshold, args.pct_tail)
-    uncertain = isolate_uncertain_predictions(df, args.uncertainty_threshold, args.pct_tail)
-    confident.to_csv(args.output_dir / "confident_predictions.csv", index=False)
-    uncertain.to_csv(args.output_dir / "uncertain_predictions.csv", index=False)
-    print(f"  {len(confident):,} confident, {len(uncertain):,} uncertain rows -> {args.output_dir}")
+    print(f"  wrote {len(df):,} scored rows to {args.output_dir / 'predictions.csv'}")
+    print("  run isolate_synthetic_data_preds.py next for summary stats, plots, and the "
+          "confident/uncertain tail subsets")
 
 
 if __name__ == "__main__":
