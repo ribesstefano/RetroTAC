@@ -54,6 +54,7 @@ The module can also be imported: :func:`score_route` scores one route,
 """
 from __future__ import annotations
 
+import re
 import argparse
 import ast
 import itertools
@@ -71,7 +72,7 @@ try:
 except ImportError:
     _HAVE_RDKIT = False
 
-import re
+import pandas as pd
 
 # Organic-subset element matcher for the no-RDKit fallback (two-letter first).
 _ATOM_RE = re.compile(r"Cl|Br|[BCNOFPSIbcnofps]")
@@ -424,8 +425,6 @@ def main() -> None:
     if not args.input:
         raise SystemExit("provide --input CSV")
 
-    import pandas as pd
-
     config = _load_config(args)
 
     # sep=None + the python engine sniffs the delimiter; an explicit --sep
@@ -442,8 +441,36 @@ def main() -> None:
     output_path: str = args.output or f"{Path(args.input).with_suffix('')}_scored.csv"
     scored.to_csv(output_path, index=False)
 
+    n_rows = len(scored)
     print(f"rdkit available: {_HAVE_RDKIT}")
+    print(f"scored {n_rows} routes")
+
     print(f"\ncategory distribution:\n{scored['score_note'].value_counts().to_string()}")
+    category_pct = (scored["score_note"].value_counts(normalize=True) * 100).round(1)
+    print(f"\ncategory distribution (%):\n{category_pct.to_string()}")
+
+    n_resolved = int(scored[config.resolved_col].sum())
+    print(f"\nresolved: {n_resolved} / {n_rows} ({100 * n_resolved / n_rows:.1f}%)")
+
+    print(f"\nsynthesizability distribution:\n{scored['synthesizability'].describe().to_string()}")
+
+    bin_edges = [0, 0.2, 0.4, 0.6, 0.8, 1.0 + 1e-9]
+    bin_labels = ["[0.0-0.2)", "[0.2-0.4)", "[0.4-0.6)", "[0.6-0.8)", "[0.8-1.0]"]
+    score_bins = pd.cut(
+        scored["synthesizability"], bins=bin_edges, labels=bin_labels, right=False, include_lowest=True
+    )
+    print(f"\nsynthesizability histogram:\n{score_bins.value_counts().sort_index().to_string()}")
+
+    # Structural metrics only exist for rows with a non-empty tree (solved/unresolved
+    # tiers); purchasable/unsolved rows hit the ceiling/floor anchors with no tree.
+    struct_cols = [c for c in scored.columns if c.startswith("struct_")]
+    has_tree = scored["struct_n_steps"].notna()
+    if has_tree.any():
+        print(
+            f"\nstructural metrics (routes with a non-empty tree, n={int(has_tree.sum())}):\n"
+            f"{scored.loc[has_tree, struct_cols].describe().to_string()}"
+        )
+
     print(f"\nsaved -> {output_path}")
 
 
