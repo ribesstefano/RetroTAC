@@ -6,7 +6,7 @@ evaluation.py:
   - cv_fold_scores.pkl   -> per-model, per-metric list of fold values
                             (only the "r2" sub-dict is used, for boxplots)
   - cv_scores_long.csv   -> long format [method, seed, fold, cv_cycle, <every metric>]
-                            (only "r2" is used here, for Tukey)
+                            (used for the simultaneous Tukey HSD CI grids)
 
 Usage:
     python plotting.py --results data/outputs/results/comparison
@@ -14,7 +14,6 @@ Usage:
 import argparse
 import json
 import pickle
-import warnings
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -22,10 +21,8 @@ import autorank
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import pingouin as pg
-from matplotlib.lines import Line2D
-from scipy.stats import spearmanr  # noqa: F401  (handy if you extend)
-from statsmodels.stats.libqsturng import psturng, qsturng
+from scipy.stats import f_oneway, spearmanr  # noqa: F401  (spearmanr handy if you extend)
+from statsmodels.stats.multicomp import pairwise_tukeyhsd
 
 # ── palette ─────────────────────────────────────────────────────────────────
 ROYAL_PURPLE = "#6A4C93"
@@ -49,7 +46,7 @@ def save_fig(fig: plt.Figure, name: str) -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for ext in ("png", "pdf"):
         fig.savefig(OUT_DIR / f"{name}.{ext}", dpi=200, bbox_inches="tight")
-    print(f"saved figures/{name}.png")
+    print(f"saved {OUT_DIR / f'{name}.png'}")
 
 
 # ── Fig 1: CV fold R2 boxplots (one subplot per model) ──────────────────────
@@ -96,111 +93,9 @@ def plot_cv_boxplots(fold_scores: Dict[str, List[float]], prefix: str = "") -> N
     save_fig(fig, f"{prefix}cv_boxplots")
 
 
-# ── Fig 2: repeated-measures Tukey HSD, mean ± CI ───────────────────────────
-def rm_tukey_hsd(df: pd.DataFrame, metric: str, group_col: str, alpha: float = 0.05) -> Tuple[pd.DataFrame, pd.DataFrame, float]:
-    """Run a repeated-measures ANOVA + Tukey HSD post-hoc pairwise comparison.
-
-    Args:
-        df: Long-format frame with `metric`, `group_col`, and a `cv_cycle`
-            paired-sample id column (see `build_cv_frames` in
-            models_evaluation.py).
-        metric: Name of the column to compare (e.g. "r2").
-        group_col: Name of the grouping column (e.g. "method").
-        alpha: Unused; kept for interface symmetry with `plot_multiple_comparisons`.
-
-    Returns:
-        Tuple of (df_means, pc, p_omnibus):
-            df_means: Per-group mean of `metric`, indexed by `group_col`.
-            pc: Symmetric matrix of Tukey-adjusted pairwise p-values, indexed
-                and columned by group label.
-            p_omnibus: The repeated-measures ANOVA's overall (uncorrected)
-                p-value for `group_col`.
-    """
-    df_means = df.groupby(group_col).mean(numeric_only=True)
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=RuntimeWarning)
-        aov = pg.rm_anova(dv=metric, within=group_col, subject="cv_cycle",
-                          data=df, detailed=True)
-    mse, df_resid = aov.loc[1, "MS"], aov.loc[1, "DF"]
-    p_omnibus = float(aov.loc[0, "p_unc"])
-    methods = df_means.index
-    n_per   = df[group_col].value_counts().mean()
-    tukey_se = np.sqrt(2 * mse / n_per)
-
-    pc = pd.DataFrame(index=methods, columns=methods, data=1.0)
-    for i, m1 in enumerate(methods):
-        for j, m2 in enumerate(methods):
-            if i < j:
-                diff  = df[df[group_col] == m1][metric].mean() - df[df[group_col] == m2][metric].mean()
-                sr    = np.abs(diff) / tukey_se
-                adj_p = psturng(sr * np.sqrt(2), len(methods), df_resid)
-                adj_p = adj_p[0] if isinstance(adj_p, np.ndarray) else adj_p
-                pc.loc[m1, m2] = pc.loc[m2, m1] = adj_p
-    return df_means, pc.astype(float), p_omnibus
-
-
-def _draw_comparison_panel(ax: plt.Axes, df_cv: pd.DataFrame, metric: str, alpha: float = 0.05, xlabel: str = None) -> None:
-    """Draw one mean ± 95% CI Tukey-HSD comparison panel onto `ax`.
-
-    Shared by `plot_multiple_comparisons` (single metric, its own figure) and
-    `plot_multiple_comparisons_grid` (many metrics, one subplot each).
-
-    Args:
-        ax: Axes to draw into.
-        df_cv: Long-format CV scores frame (see `rm_tukey_hsd`).
-        metric: Name of the column to compare.
-        alpha: Significance threshold for marking a method "significantly worse".
-        xlabel: X-axis label; defaults to `f"Mean CV {metric.upper()}"`.
-    """
-    df_means, pc, p_omnibus = rm_tukey_hsd(df_cv, metric, group_col="method", alpha=alpha)
-    df_means = df_means.sort_values(metric, ascending=True)
-    labels = df_means.index.tolist()
-    means  = df_means[metric].values
-    best   = labels[-1]
-
-    ci_low, ci_high = [], []
-    for label in labels:
-        s  = df_cv[df_cv["method"] == label][metric].values
-        se = s.std(ddof=1) / np.sqrt(len(s))
-        ci_low.append(s.mean() - 1.96 * se)
-        ci_high.append(s.mean() + 1.96 * se)
-
-    sig_worse = [l for l in labels if l != best and pc.loc[best, l] < alpha]
-    colors = [ROYAL_PURPLE if l == best else SIG_RED if l in sig_worse else DARK_SLATE
-              for l in labels]
-
-    for i, (m, lo, hi, c) in enumerate(zip(means, ci_low, ci_high, colors)):
-        ax.plot([lo, hi], [i, i], color=c, linewidth=2.5)
-        ax.plot(m, i, "o", color=c, markersize=6)
-    bi = labels.index(best)
-    ax.axvline(ci_low[bi],  color=ROYAL_PURPLE, linestyle="--", linewidth=0.8, alpha=0.6)
-    ax.axvline(ci_high[bi], color=ROYAL_PURPLE, linestyle="--", linewidth=0.8, alpha=0.6)
-    ax.set_yticks(range(len(labels))); ax.set_yticklabels(labels, fontsize=9)
-    ax.set_xlabel(xlabel or f"Mean CV {metric.upper()}")
-    ax.set_title(f"p = {p_omnibus:.2e}", fontsize=10)
-
-
-def plot_multiple_comparisons(df_cv: pd.DataFrame, metric: str = "r2", prefix: str = "", alpha: float = 0.05) -> None:
-    """Save a mean ± 95% CI comparison plot with Tukey-HSD significance coloring.
-
-    Args:
-        df_cv: Long-format CV scores frame (see `rm_tukey_hsd`).
-        metric: Name of the column to compare.
-        prefix: Optional filename prefix for the saved figure.
-        alpha: Significance threshold for marking a method "significantly worse".
-    """
-    n_labels = df_cv["method"].nunique()
-    fig, ax = plt.subplots(figsize=(7, max(3, n_labels * 0.8)))
-    _draw_comparison_panel(ax, df_cv, metric, alpha=alpha)
-    ax.set_title("Multiple Comparisons (Tukey HSD, FWER=0.05)")
-    ax.legend(handles=[
-        Line2D([0], [0], color=ROYAL_PURPLE, lw=2, label="Best method"),
-        Line2D([0], [0], color=SIG_RED,      lw=2, label="Significantly worse"),
-        Line2D([0], [0], color=DARK_SLATE,   lw=2, label="Similar"),
-    ], fontsize=8, loc="lower right")
-    plt.tight_layout()
-    save_fig(fig, f"{prefix}reg_multiple_comparisons")
-
+# Metrics where a LOWER value is better; every other metric (r2, spearman_rho,
+# the clf_* rates/AUCs, ...) defaults to higher-is-better.
+LOWER_IS_BETTER_METRICS = {"rmse", "mae", "medae", "max_error"}
 
 # metric column -> display name, for grid axis labels/titles
 METRIC_DISPLAY_NAMES = {
@@ -211,45 +106,83 @@ METRIC_DISPLAY_NAMES = {
 }
 
 
-def plot_multiple_comparisons_grid(
-    df_cv: pd.DataFrame,
-    metrics: List[str] = ("clf_roc_auc", "clf_pr_auc", "clf_mcc", "clf_recall"),
-    prefix: str = "", alpha: float = 0.05, ncols: int = 2,
-) -> None:
-    """Save a grid of mean ± 95% CI Tukey-HSD comparison panels, one per metric.
+# ── Fig 2: simultaneous Tukey HSD confidence intervals, one grid per metric ──
+def run_anova(df_in: pd.DataFrame, col: str, group_col: str = "method") -> float:
+    """Run a one-way ANOVA on `col`, grouped by `group_col`.
 
     Args:
-        df_cv: Long-format CV scores frame (see `rm_tukey_hsd`); must contain
-            every column named in `metrics`.
-        metrics: Metric columns to plot, one subplot each.
-        prefix: Optional filename prefix for the saved figure.
-        alpha: Significance threshold for marking a method "significantly worse".
-        ncols: Number of subplot columns.
+        df_in: Long-format frame holding `col` and `group_col`.
+        col: Metric column to test.
+        group_col: Name of the grouping column.
+
+    Returns:
+        The one-way ANOVA's (uncorrected) p-value for `group_col`.
     """
-    metrics = [m for m in metrics if m in df_cv.columns]
-    if not metrics:
-        print("plot_multiple_comparisons_grid: none of the requested metrics "
-              "are present in df_cv -- skipping.")
+    groups = [g[col].values for _, g in df_in.groupby(group_col)]
+    return float(f_oneway(*groups)[1])
+
+
+def make_simultaneous_ci_plot(
+    df_cv: pd.DataFrame,
+    metrics: List[str],
+    group_col: str = "method",
+    alpha: float = 0.05,
+    prefix: str = "",
+) -> None:
+    """Save a grid of simultaneous Tukey HSD confidence-interval plots, one per metric.
+
+    Uses statsmodels' `pairwise_tukeyhsd` (a one-way, independent-samples
+    ANOVA -- not the repeated-measures/paired-fold design of the CV data) and
+    its own `plot_simultaneous`: every group's CI is drawn relative to the
+    metric's best group (direction per LOWER_IS_BETTER_METRICS), and two
+    groups' intervals overlapping means they are NOT significantly different
+    -- this reads directly off the plot for every pair, not just against the
+    best, unlike a vs-best-only comparison.
+
+    Args:
+        df_cv: Long-format CV scores frame with `group_col` and every column
+            named in `metrics` (see `build_cv_frames` in evaluation.py).
+        metrics: Metric columns to plot, one subplot each. A metric missing
+            from `df_cv` or containing any NaN (e.g. clf_roc_auc on a
+            single-class fold) is skipped.
+        group_col: Name of the grouping column.
+        alpha: Family-wise significance threshold for the Tukey HSD intervals.
+        prefix: Optional filename prefix for the saved figure.
+    """
+    tukey_results = {}
+    for metric in metrics:
+        if metric not in df_cv.columns:
+            print(f"make_simultaneous_ci_plot: {metric!r} not in df_cv -- skipping.")
+            continue
+        if df_cv[metric].isna().any():
+            print(f"make_simultaneous_ci_plot: metric {metric!r} contains NaN values, skipping...")
+            continue
+        tukey_results[metric] = pairwise_tukeyhsd(
+            endog=df_cv[metric], groups=df_cv[group_col], alpha=alpha)
+
+    if not tukey_results:
+        print("make_simultaneous_ci_plot: no plottable metrics -- skipping.")
         return
-    n_labels = df_cv["method"].nunique()
-    ncols = min(ncols, len(metrics))
-    nrows = int(np.ceil(len(metrics) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(5.5 * ncols, max(2.5, n_labels * 0.7) * nrows),
-                             gridspec_kw={"hspace": 0.6, "wspace": 0.4}, squeeze=False)
-    axes = axes.flatten()
 
-    for ax, metric in zip(axes, metrics):
-        _draw_comparison_panel(ax, df_cv, metric, alpha=alpha,
-                               xlabel=METRIC_DISPLAY_NAMES.get(metric, metric.upper()))
-    for j in range(len(metrics), len(axes)):
-        axes[j].set_visible(False)
+    fig, axes = plt.subplots(1, len(tukey_results), figsize=(7 * len(tukey_results), 5), squeeze=False)
+    axes = axes[0]
 
-    fig.legend(handles=[
-        Line2D([0], [0], color=ROYAL_PURPLE, lw=2, label="Best method"),
-        Line2D([0], [0], color=SIG_RED,      lw=2, label="Significantly worse"),
-        Line2D([0], [0], color=DARK_SLATE,   lw=2, label="Similar"),
-    ], fontsize=8, loc="lower center", ncol=3, bbox_to_anchor=(0.5, -0.02))
-    save_fig(fig, f"{prefix}multi_metric_comparisons")
+    for ax, (metric, tukey_result) in zip(axes, tukey_results.items()):
+        higher_is_better = metric not in LOWER_IS_BETTER_METRICS
+        best_method = (df_cv.groupby(group_col)[metric].mean()
+                      .sort_values(ascending=not higher_is_better).index[0])
+        tukey_result.plot_simultaneous(comparison_name=best_method, ax=ax)
+        p_omnibus = run_anova(df_cv, metric, group_col=group_col)
+        ax.set_xlabel(METRIC_DISPLAY_NAMES.get(metric, metric.upper()), fontsize=11)
+        ax.set_title(f"p = {p_omnibus:.2e}", fontsize=11)
+        print(f"  Best method for {metric}: {best_method}")
+
+    for ax in axes:
+        ax.tick_params(axis="y", labelsize=10)
+    fig.suptitle(f"Simultaneous Confidence Intervals\nTukey HSD, FWER={alpha}",
+                fontsize=13, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.88])
+    save_fig(fig, f"{prefix}simultaneous_ci_grid")
 
 
 # ── Fig 3: held-out test set, predicted vs. measured (one panel per model) ──
@@ -388,28 +321,106 @@ def plot_ensemble_strategies(results_dir: Path, prefix: str = "") -> None:
     save_fig(fig, f"{prefix}ensemble_strategies")
 
 
+# name evaluation.py's --ensemble caches its per-fold-model raw predictions
+# under (see its own FOLD_PRED_FILENAME); duplicated here since these are two
+# standalone sibling scripts with no shared import.
+FOLD_PRED_FILENAME = "cv_fold_test_predictions.pkl"
+
+
+def _reconstruct_ensemble_prediction(
+    results_dir: Path, weights: Dict[str, float],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Rebuild one ensemble strategy's prediction from its saved fold weights.
+
+    evaluation.py's --ensemble scores each strategy on a held-out eval split
+    but never persists the strategy's own y_pred array -- only its fold
+    weights (ensemble_weights_{strategy}.json) and every individual fold
+    model's raw prediction over the FULL test set (cv_fold_test_predictions.pkl).
+    Re-weighting those raw predictions reconstructs the strategy's prediction
+    over the whole test set (weights already sum to 1, see save_ensemble_weights).
+
+    Args:
+        results_dir: Directory holding cv_fold_test_predictions.pkl (an
+            evaluation.py --ensemble --out folder).
+        weights: fold_model_key -> weight, as saved in
+            ensemble_weights_{strategy}.json's "weights" field.
+
+    Returns:
+        Tuple (y_pred, y_true) over the full test set.
+    """
+    with open(results_dir / FOLD_PRED_FILENAME, "rb") as f:
+        cached = pickle.load(f)
+    fold_predictions, y_true = cached["fold_predictions"], cached["y_true"]
+    y_pred = sum(w * fold_predictions[k] for k, w in weights.items())
+    return np.asarray(y_pred, dtype=float), np.asarray(y_true, dtype=float)
+
+
+def plot_ensemble_scatter(results_dir: Path, prefix: str = "") -> None:
+    """Save one predicted-vs-measured scatter plot per ensemble strategy.
+
+    Unlike plot_test_scatter (one grid, every model as a subplot in a single
+    file), each strategy here gets its own PNG/PDF pair, via a 1-label call
+    to plot_test_scatter per strategy -- reusing its scatter/metrics-textbox
+    drawing rather than duplicating it.
+
+    Args:
+        results_dir: Directory holding ensemble_strategies.csv,
+            ensemble_weights_*.json, and cv_fold_test_predictions.pkl (an
+            evaluation.py --ensemble --out folder).
+        prefix: Optional filename prefix shared by every saved figure.
+    """
+    csv_path = results_dir / "ensemble_strategies.csv"
+    fold_pred_path = results_dir / FOLD_PRED_FILENAME
+    if not csv_path.exists() or not fold_pred_path.exists():
+        print(f"No {csv_path} / {fold_pred_path} -- skipping per-strategy ensemble "
+              f"scatter plots (run evaluation.py with --ensemble first).")
+        return
+
+    metrics_df = pd.read_csv(csv_path, index_col=0)
+    for name in metrics_df.index:
+        weights_path = results_dir / f"ensemble_weights_{name}.json"
+        if not weights_path.exists():
+            print(f"No {weights_path} -- skipping scatter for strategy {name!r} "
+                  f"(only the best_single/uniform/best_backend/caruana strategies "
+                  f"have saved fold weights, not e.g. an --evidential-model row).")
+            continue
+        with open(weights_path) as f:
+            weights = json.load(f)["weights"]
+        y_pred, y_true = _reconstruct_ensemble_prediction(results_dir, weights)
+
+        label = _pretty_strategy(name)
+        predictions = {label: {"y_pred": y_pred, "y_true": y_true}}
+        row = metrics_df.loc[[name]].rename(index={name: label})
+        plot_test_scatter(predictions, row, prefix=f"{prefix}{name}_")
+
+
 def main() -> None:
     """CLI entry point: load exported CV artifacts and save the comparison figures."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", default="data/outputs/results/comparison",
                     help="folder with cv_fold_scores.pkl and cv_scores_long.csv")
+    ap.add_argument("--out-dir", type=Path, default=Path("figures"),
+                    help="directory to save figures into (default: figures)")
     args = ap.parse_args()
     res = Path(args.results)
+
+    global OUT_DIR
+    OUT_DIR = args.out_dir
 
     fold_metrics = pickle.load(open(res / "cv_fold_scores.pkl", "rb"))   # {model: {metric: [values]}}
     fold_scores  = {label: metrics["r2"] for label, metrics in fold_metrics.items()}
     df_cv        = pd.read_csv(res / "cv_scores_long.csv")
     wide         = pd.read_csv(res / "cv_scores_wide.csv", header=[0, 1], index_col=[0, 1])   # (seed, fold) index
 
-    # sanity: each model must contribute the same number of folds (balanced for rm-ANOVA)
+    # sanity: each model must contribute the same number of folds (balanced comparison)
     counts = df_cv.groupby("method")["r2"].count()
     print("folds per model:\n", counts.to_string())
     if counts.nunique() != 1:
-        print("WARNING: unbalanced folds — rm_anova needs equal counts per model.")
+        print("WARNING: unbalanced folds — the ANOVA needs equal counts per model.")
 
     plot_cv_boxplots(fold_scores)
-    plot_multiple_comparisons(df_cv, metric="r2")
-    plot_multiple_comparisons_grid(df_cv)
+    make_simultaneous_ci_plot(df_cv, prefix="reg_", metrics=["r2", "rmse", "mae", "spearman_rho"])
+    make_simultaneous_ci_plot(df_cv, prefix="clf_", metrics=["clf_roc_auc", "clf_pr_auc", "clf_mcc", "clf_recall"])
 
     test_pred_path, test_metrics_path = res / "test_predictions.pkl", res / "test_metrics.csv"
     if test_pred_path.exists() and test_metrics_path.exists():
@@ -422,6 +433,7 @@ def main() -> None:
               "skipping test-set scatter plots (run evaluation.py with --test-csv first).")
 
     plot_ensemble_strategies(res)
+    plot_ensemble_scatter(res)
 
 
 if __name__ == "__main__":

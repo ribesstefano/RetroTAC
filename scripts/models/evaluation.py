@@ -270,6 +270,181 @@ def build_cv_metrics_summary(wide: pd.DataFrame) -> pd.DataFrame:
     return summary.reset_index()
 
 
+# (metric key, LaTeX column header, higher-is-better, decimal places)
+LATEX_METRICS: List[Tuple[str, str, bool, int]] = [
+    ("r2", "$R^2$", True, 3),
+    ("rmse", "RMSE", False, 3),
+    ("mae", "MAE", False, 3),
+    ("spearman_rho", r"Spearman $\rho$", True, 3),
+    ("clf_roc_auc", "ROC-AUC", True, 3),
+    ("clf_precision", "Precision", True, 2),
+    ("clf_recall", "Recall", True, 2),
+]
+
+
+def _ordered_labels(available: List[str], model_order: Tuple[str, ...]) -> List[str]:
+    """`available`, sorted to match `model_order` with any extras appended after."""
+    return [m for m in model_order if m in available] + [m for m in available if m not in model_order]
+
+
+def _fmt_cv_cell(mean: float, std: float, decimals: int, bold: bool) -> str:
+    """Render one CV cell as `$mean\\pm std$`, or `---` if `mean` is NaN."""
+    if pd.isna(mean):
+        return "---"
+    std = 0.0 if pd.isna(std) else std
+    body = f"{mean:.{decimals}f}\\pm{std:.{decimals}f}"
+    return f"$\\mathbf{{{body}}}$" if bold else f"${body}$"
+
+
+def _fmt_test_cell(value: Optional[float], decimals: int, bold: bool) -> str:
+    """Render one held-out cell as a plain number, or `---` if `value` is missing/NaN."""
+    if value is None or pd.isna(value):
+        return "---"
+    body = f"{value:.{decimals}f}"
+    return f"\\textbf{{{body}}}" if bold else body
+
+
+def build_latex_summary_table(
+    cv_wide: pd.DataFrame,
+    test_results: Optional[Dict[str, Dict[str, float]]] = None,
+    model_order: Tuple[str, ...] = ("XGB", "MLP", "GNN"),
+    clf_threshold: float = 0.7,
+    n_test: Optional[int] = None,
+    metrics: List[Tuple[str, str, bool, int]] = LATEX_METRICS,
+    caption: Optional[str] = None,
+    label: str = "tab:performance",
+) -> str:
+    """Render CV (+ optional held-out) results as a LaTeX `table` environment.
+
+    CV cells are mean $\\pm$ s.d. over every (seed, fold) row in `cv_wide`; held-out cells
+    (when `test_results` is given) are single values, e.g. from `evaluate_test`'s `results`
+    dict or a reloaded `test_metrics.csv`. The best model per column is bolded within each
+    section separately (min for rmse/mae, max for everything else).
+
+    Args:
+        cv_wide: MultiIndex-column frame (model, metric) from `build_cv_frames`.
+        test_results: Optional label -> {metric: value}. None omits the "Held-out" block
+            entirely rather than filling it with placeholders.
+        model_order: Preferred row order; any model not listed is appended after, in the
+            order it appears in `cv_wide`.
+        clf_threshold: Binarisation cut used for precision/recall, quoted in the caption.
+        n_test: Held-out set size, quoted in the caption when `test_results` is given.
+        metrics: (key, header, higher_is_better, decimals) columns to render, in order.
+        caption: Full `\\caption{}` text; auto-generated from `clf_threshold`/`n_test`/the
+            fold count when None.
+        label: `\\label{}` value.
+
+    Returns:
+        The LaTeX source for a full `table` environment (also see `report_latex_summary`,
+        which prints and saves this).
+    """
+    labels = _ordered_labels(list(cv_wide.columns.get_level_values("model").unique()), model_order)
+
+    cv_stats = {
+        lab: {m: (cv_wide[(lab, m)].mean(), cv_wide[(lab, m)].std()) for m, *_ in metrics}
+        for lab in labels
+    }
+    cv_best = {
+        m: max((lab for lab in labels if not pd.isna(cv_stats[lab][m][0])),
+               key=lambda lab: cv_stats[lab][m][0], default=None)
+        if higher else
+        min((lab for lab in labels if not pd.isna(cv_stats[lab][m][0])),
+            key=lambda lab: cv_stats[lab][m][0], default=None)
+        for m, _, higher, _ in metrics
+    }
+
+    test_best: Dict[str, Optional[str]] = {}
+    if test_results:
+        for m, _, higher, _ in metrics:
+            candidates = [lab for lab in labels
+                          if not pd.isna(test_results.get(lab, {}).get(m, float("nan")))]
+            test_best[m] = (
+                (max if higher else min)(candidates, key=lambda lab: test_results[lab][m])
+                if candidates else None
+            )
+
+    if caption is None:
+        parts = [
+            "Regression and thresholded-classification performance.",
+            f"CV values are mean $\\pm$ s.d. over {len(cv_wide)} paired outer evaluations.",
+        ]
+        if test_results:
+            parts.append(
+                f"Held-out models are evaluated on {n_test} held-out molecules."
+                if n_test else "Held-out models are evaluated on a held-out test set."
+            )
+        parts.append(
+            f"Precision and recall use threshold {clf_threshold:g} for both labels and "
+            "predictions; ROC-AUC uses continuous predictions."
+        )
+        caption = " ".join(parts)
+
+    col_spec = "ll" + "r" * len(metrics)
+    lines = [
+        r"\begin{table}[t]",
+        r"\centering",
+        rf"\caption{{{caption}}}",
+        rf"\label{{{label}}}",
+        r"\footnotesize",
+        r"\resizebox{\linewidth}{!}{%",
+        rf"\begin{{tabular}}{{{col_spec}}}",
+        r"\toprule",
+        "Evaluation & Model & " + " & ".join(h for _, h, _, _ in metrics) + r"\\",
+        r"\midrule",
+    ]
+
+    for i, lab in enumerate(labels):
+        row_label = "Grouped CV & " if i == 0 else "& "
+        cells = [_fmt_cv_cell(*cv_stats[lab][m], decimals, cv_best[m] == lab) for m, _, _, decimals in metrics]
+        lines.append(row_label + f"{lab} & " + " & ".join(cells) + r"\\")
+
+    if test_results:
+        lines.append(r"\midrule")
+        for i, lab in enumerate(labels):
+            row_label = "Held-out & " if i == 0 else "& "
+            cells = [
+                _fmt_test_cell(test_results.get(lab, {}).get(m), decimals, test_best[m] == lab)
+                for m, _, _, decimals in metrics
+            ]
+            lines.append(row_label + f"{lab} & " + " & ".join(cells) + r"\\")
+
+    lines += [r"\bottomrule", r"\end{tabular}}", r"\end{table}"]
+    return "\n".join(lines)
+
+
+def report_latex_summary(
+    cv_wide: pd.DataFrame,
+    out_dir: Path,
+    test_results: Optional[Dict[str, Dict[str, float]]] = None,
+    model_order: Tuple[str, ...] = ("XGB", "MLP", "GNN"),
+    clf_threshold: float = 0.7,
+    n_test: Optional[int] = None,
+) -> str:
+    """Build the LaTeX summary table (see `build_latex_summary_table`), print it, and save it.
+
+    Args:
+        cv_wide: MultiIndex-column frame (model, metric) from `build_cv_frames`.
+        out_dir: Directory to write `summary_table.tex` into.
+        test_results: See `build_latex_summary_table`.
+        model_order: See `build_latex_summary_table`.
+        clf_threshold: See `build_latex_summary_table`.
+        n_test: See `build_latex_summary_table`.
+
+    Returns:
+        The LaTeX source (same as `build_latex_summary_table`).
+    """
+    table = build_latex_summary_table(
+        cv_wide, test_results=test_results, model_order=model_order,
+        clf_threshold=clf_threshold, n_test=n_test,
+    )
+    print("\n── LaTeX summary table ─────────────────────────────────────────────────")
+    print(table)
+    path = out_dir / "summary_table.tex"
+    path.write_text(table + "\n")
+    print(f"  (saved to {path})")
+    return table
+
+
 def _fold_scores_by_metric(wide: pd.DataFrame) -> Dict[str, Dict[str, List[float]]]:
     """Reshape `wide` into {model: {metric: [values, ...]}} for pickling.
 
@@ -1077,6 +1252,8 @@ def main() -> None:
     wide.to_csv(out_dir / "cv_scores_wide.csv")
     build_cv_metrics_summary(wide).to_csv(out_dir / "cv_metrics_summary.csv", index=False)
 
+    test_results: Optional[Dict[str, Dict[str, float]]] = None
+    n_test: Optional[int] = None
     if args.test_csv:
         smiles_col = args.smiles_col or cfg.molecule_col
         target_col = args.target_col or cfg.target
@@ -1117,6 +1294,9 @@ def main() -> None:
                 pickle.dump(predictions, f)
             pd.DataFrame(results).T.round(4).to_csv(test_metrics_path)
 
+        test_results = pd.read_csv(test_metrics_path, index_col=0).to_dict(orient="index")
+        n_test = len(next(iter(predictions.values()))["y_true"]) if predictions else None
+
         if args.ensemble:
             print("\n[2b/3] Predicting test set with every 5x5-CV fold model...")
             fold_predictions, y_true_folds = predict_fold_models(
@@ -1146,6 +1326,12 @@ def main() -> None:
             )
     else:
         print("\n[2/3] No --test-csv given; skipping test-set evaluation.")
+
+    print("\n[2d/3] Building LaTeX summary table...")
+    report_latex_summary(
+        wide, out_dir, test_results=test_results,
+        clf_threshold=cfg.hpo.classification_threshold, n_test=n_test,
+    )
 
     print(f"\n[3/3] Done. Artifacts in {out_dir}")
 
