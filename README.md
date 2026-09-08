@@ -14,7 +14,34 @@ We do not enforce the output of the model between 0 and 1, so that if the model 
 
 **TODO**
 
+### Get Synthesizability Scores
+
+Get molecular-based synthesizability scores:
+
+```bash
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
+    python retro_scores/synthesizability_scores.py \
+        data/routes/routes.csv \
+        data/retro_scoring/routes_mol_scores.csv \
+        --smiles-col molecule
+```
+
+Get route-based synthesizability scores:
+
+```bash
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
+    python retro_scores/route_scores/route_tree_score.py \
+        --input data/routes/routes.csv \
+        --output data/routes/routes_scored.csv \
+        --config config/route_scoring.yaml \
+        --route-col route \
+        --resolved-col resolved \
+        --smiles-col molecule
+```
+
 ### Remove Duplicates
+
+Remove duplicates by taking the highest synthesizability score for each unique SMILES string.
 
 ```bash
 apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
@@ -127,7 +154,7 @@ apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
   data/sets/routes_train_val.csv \
   --combos all --combo-keys warhead linker e3 --combo-mode both \
   --targets synthesizability sa_score struct_n_steps \
-  --output-dir outputs/analysis/scaffold_choice
+  --output-dir outputs/scaffold_analysis
 ```
 
 Combinations are now measured rather than assumed, and neither helps — product keys leak more, union keys percolate. Warhead grouping remains the best feasible point: 0% warhead leakage, 3,341 groups, largest 2.5% of data, and it closes the highest-η² channel (0.58–0.86). The residual 78% linker / 92% E3 leakage is not fixable on this dataset without discarding most of it, so the honest move is to report it as a stated limitation.
@@ -208,7 +235,11 @@ srun -A berzelius-2026-62 -p berzelius --gpus=1 --time=00:30:00 --pty \
 
 ```bash
 apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
-  python scripts/models/plotting.py --results outputs/results/results_20260828_182305
+  python scripts/models/plotting_evaluation.py --results outputs/results/results_20260828_182305
+
+# Plot CV fold distributions
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+    python scripts/models/plotting_folds.py --input data/sets/routes_train_val.csv
 ```
 
 #### Ensemble
@@ -359,7 +390,29 @@ caruana             27    GNN:13,MLP:7,XGB:7  0.1320  0.647    0.0675        0.3
 
 ## Negative Data
 
+Get predictions:
+
 ```bash
 apptainer exec --nv $(bash apptainer/bind_live_repo.sh) apptainer/inference.sif \
   python scripts/negative_data/predict_synthetic_data.py
+```
+
+Isolate top- and bottom-scoring synthetic data, divided by model uncertainty:
+
+```bash
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/negative_data/isolate_synthetic_data_preds.py
+```
+
+Get true synthesis scores:
+
+```bash
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
+    python retro_scores/route_scores/route_tree_score.py \
+        --input data/negative_data/routes_confident_high.csv \
+        --output data/negative_data/routes_confident_high_scored.csv \
+        --config config/route_scoring.yaml \
+        --route-col route \
+        --resolved-col resolved \
+        --smiles-col molecule
 ```

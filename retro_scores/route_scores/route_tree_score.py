@@ -396,15 +396,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--input", "-i", help="input CSV of routes")
     parser.add_argument("--output", "-o", help="output CSV path (default: <input>_scored.csv)")
-    parser.add_argument(
-        "--config", "-c", help="path to the scoring YAML (default: config/route_scoring.yaml)"
-    )
-    parser.add_argument("--route-col", help="override the route-dict column name")
-    parser.add_argument("--resolved-col", help="override the solvability-flag column name")
-    parser.add_argument("--smiles-col", help="override the molecule-id column name")
-    parser.add_argument(
-        "--sep", default=None, help="CSV delimiter (default: auto-detect; use '\\t' for TSV)"
-    )
+    parser.add_argument("--config", "-c", help="path to the scoring YAML (default: config/route_scoring.yaml)",
+                        default="config/route_scoring.yaml")
+    parser.add_argument("--route-col", help="override the route-dict column name. Default: 'route'", default="route")
+    parser.add_argument("--resolved-col", help="override the solvability-flag column name. Default: 'resolved'", default="resolved")
+    parser.add_argument("--smiles-col", help="override the molecule-id column name. Default: 'smiles'", default="smiles")
+    parser.add_argument("--sep", help="CSV delimiter (default: auto-detect; use '\\t' for TSV)", default=None)
     return parser.parse_args()
 
 
