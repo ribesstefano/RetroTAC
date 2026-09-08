@@ -42,10 +42,13 @@ Six reports, all printed; each is independently useful:
                           default `config/models_config.yaml`'s `cross_validation.{seeds,
                           n_folds}` -- 5 seeds x 5 folds = 25 outer splits by default) and
                           reports, as mean +/- std over all splits, the fraction of held-out
-                          rows whose *other* components also occur in training. This is
-                          the number that matters: it quantifies the memorisation channel
-                          each grouping choice leaves open, under the same splits training
-                          itself would draw.
+                          rows whose *other* components also occur in training -- under TWO
+                          definitions of "also occur": (5a) same SCAFFOLD as some training
+                          row's, and (5b) exact RAW-SMILES duplicate of some training row's
+                          (literal component reuse, independent of scaffold abstraction).
+                          This is the number that matters: it quantifies the memorisation
+                          channel each grouping choice leaves open, under the same splits
+                          training itself would draw.
   6. eta^2             -- fraction of each target's variance explained by group
                           membership. High eta^2 on a key means the label is largely
                           determined by that key, so leaving it unconstrained (report 5)
@@ -101,16 +104,17 @@ Arguments:
                       target (default: 1000).
     --output-dir      If given, also write group_stats.csv, leakage.csv and
                       eta_squared.csv here.
-    --log-file        Path to write a copy of everything printed to the console
-                      (default: outputs/logs/scaffold_analysis/ if --output-dir is not
-                      given, else inside --output-dir; both cases auto-name the file
-                      from the input CSV's stem and a timestamp).
+    --report-file     Path to a .txt file to (over)write a copy of everything printed to
+                      the console (default: outputs/reports/scaffold_analysis/ if
+                      --output-dir is not given, else inside --output-dir; both cases
+                      auto-name the file from the input CSV's stem). Re-running against
+                      the same input overwrites this file rather than accumulating one
+                      per run.
 """
 
 import argparse
 import sys
 from contextlib import contextmanager
-from datetime import datetime
 from itertools import combinations
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
@@ -211,11 +215,13 @@ def parse_args() -> argparse.Namespace:
         help="If given, also write group_stats.csv, leakage.csv and eta_squared.csv here.",
     )
     p.add_argument(
-        "--log-file",
+        "--report-file",
         type=str,
         default=None,
-        help="Path to write a copy of the console output to (default: auto-named, under "
-             "--output-dir if given, else outputs/logs/scaffold_analysis/).",
+        help="Path to a .txt file to (over)write a copy of the console output to (default: "
+             "auto-named, under --output-dir if given, else outputs/reports/scaffold_analysis/; "
+             "reruns against the same input overwrite this file rather than accumulating one "
+             "per run).",
     )
     return p.parse_args()
 
@@ -569,27 +575,38 @@ def load_cv_scheme(config_path: str) -> Tuple[List[int], int]:
     return list(cv.seeds), cv.n_folds
 
 
-def report_leakage(group_keys: Dict[str, pd.Series], base_keys: List[str],
-                   config_path: str, fallback_n_folds: int) -> Optional[pd.DataFrame]:
+def report_leakage(df: pd.DataFrame, group_keys: Dict[str, pd.Series], base_keys: List[str],
+                   raw_cols: Dict[str, str], config_path: str,
+                   fallback_n_folds: int) -> Optional[pd.DataFrame]:
     """Run the real 5x5 nested-CV splitter per candidate key and measure leakage.
 
     For each candidate grouping key this builds the actual outer-CV folds via
-    `get_fold_indices`, once per (seed, fold) pair of the project's real nested-CV
-    scheme (`config_path`'s `cross_validation.{seeds,n_folds}` -- 5 seeds x 5 folds = 25
-    outer splits by default), then reports -- as mean +/- std over all those splits --
-    the fraction of held-out rows whose single-column component groups also appear in
-    the training half.
+    `get_fold_indices` -- based on that key's own scaffold, exactly as real training
+    would -- once per (seed, fold) pair of the project's real nested-CV scheme
+    (`config_path`'s `cross_validation.{seeds,n_folds}` -- 5 seeds x 5 folds = 25 outer
+    splits by default). It then reports, as mean +/- std over all those splits, the
+    fraction of held-out rows whose *other* single-column components also occur in the
+    training half, under two definitions of "also occur":
+
+      - scaffold   (5a): the held-out row's `other`-column scaffold (same flavour as
+        `group_keys`) matches some training row's -- the leakage channel used elsewhere
+        in this tool.
+      - raw_smiles (5b): the held-out row's `other`-column raw SMILES string is an
+        exact duplicate of some training row's -- literal component reuse, independent
+        of any scaffold abstraction (see the "exact-duplicate rows" counts in report 1).
 
     Args:
+        df: Source DataFrame, supplying the raw SMILES columns named in `raw_cols`.
         group_keys: Mapping from key name to per-row group Series.
         base_keys: Single-column key names to measure leakage of.
+        raw_cols: Mapping from single-column key name to its raw SMILES column in `df`.
         config_path: Path to a models_config.yaml-shaped file supplying the scheme.
         fallback_n_folds: n_folds to fall back to (single seed=42) if `config_path`
             can't be loaded.
 
     Returns:
-        Tidy DataFrame with one row per (grouped_by, leaked_key, seed, fold), or None if
-        the splitter could not be imported (it pulls in optuna, absent from the
+        Tidy DataFrame with one row per (basis, grouped_by, leaked_key, seed, fold), or
+        None if the splitter could not be imported (it pulls in optuna, absent from the
         inference environment).
     """
     print("\n" + "=" * 86)
@@ -611,39 +628,70 @@ def report_leakage(group_keys: Dict[str, pd.Series], base_keys: List[str],
         print(f"Could not load --cv-config {config_path} ({exc}); "
               f"falling back to a single seed=42, {n_folds}-fold split.")
 
-    print("\nFraction of HELD-OUT rows whose component group is also present in TRAIN,")
-    print("reported as mean +/- std over all outer (seed, fold) splits. Lower is better.")
-    print("Note product ('&') keys leak MORE than their parts and union ('+') keys drive")
-    print("their constituents to 0.0% -- that is the point.\n")
+    print("\nFraction of HELD-OUT rows whose component also occurs in TRAIN, reported as")
+    print("mean +/- std over all outer (seed, fold) splits. Lower is better. Note product")
+    print("('&') keys leak MORE than their parts and union ('+') keys drive their")
+    print("constituents to 0.0% -- that is the point.")
 
-    work = pd.DataFrame({n: s for n, s in group_keys.items()}).reset_index(drop=True)
-    print(f"  {'group by':<22s}" + "".join(f"{'leaks ' + n:>16s}" for n in base_keys))
+    # scaffold-group columns plus a raw-SMILES column per base key, riding along through
+    # the same per-grp filtering/splitting so both leakage definitions share one pass
+    work = pd.DataFrame({n: s for n, s in group_keys.items()})
+    for name, col in raw_cols.items():
+        work[f"__raw__{name}"] = df[col].to_numpy()
+    work = work.reset_index(drop=True)
+
     rows = []
+    leak_scaffold_by_grp: Dict[str, Dict[str, List[float]]] = {}
+    leak_raw_by_grp: Dict[str, Dict[str, List[float]]] = {}
     for grp in group_keys:
         sim = work.copy()
         sim["scaffolds"] = sim[grp]
         # rows with a missing key cannot be grouped; drop them for this simulation only
         sim = sim.dropna(subset=["scaffolds"]).reset_index(drop=True)
-        leak: Dict[str, List[float]] = {other: [] for other in base_keys if other != grp}
+        others = [other for other in base_keys if other != grp]
+        leak_scaffold: Dict[str, List[float]] = {other: [] for other in others}
+        leak_raw: Dict[str, List[float]] = {other: [] for other in others}
         for seed in seeds:
             for fold in range(n_folds):
                 train_idx, val_idx, _, _ = get_fold_indices(sim, seed, fold, n_folds)
-                for other in leak:
+                for other in others:
                     train_vals = set(sim[other].iloc[train_idx].dropna())
                     val_vals = sim[other].iloc[val_idx]
                     frac = val_vals.isin(train_vals).sum() / max(len(val_vals), 1)
-                    leak[other].append(frac)
-                    rows.append({"grouped_by": grp, "leaked_key": other, "seed": seed,
-                                 "fold": fold, "frac_val_rows_seen_in_train": frac})
-        line = f"  {grp:<22s}"
-        for other in base_keys:
-            if other == grp:
-                line += f"{'-':>16s}"
-            else:
-                arr = np.array(leak[other])
-                cell = f"{100 * arr.mean():.1f}±{100 * arr.std():.1f}%"
-                line += f"{cell:>16s}"
-        print(line)
+                    leak_scaffold[other].append(frac)
+                    rows.append({"basis": "scaffold", "grouped_by": grp, "leaked_key": other,
+                                 "seed": seed, "fold": fold,
+                                 "frac_val_rows_seen_in_train": frac})
+
+                    raw_col = f"__raw__{other}"
+                    train_vals_raw = set(sim[raw_col].iloc[train_idx].dropna())
+                    val_vals_raw = sim[raw_col].iloc[val_idx]
+                    frac_raw = val_vals_raw.isin(train_vals_raw).sum() / max(len(val_vals_raw), 1)
+                    leak_raw[other].append(frac_raw)
+                    rows.append({"basis": "raw_smiles", "grouped_by": grp, "leaked_key": other,
+                                 "seed": seed, "fold": fold,
+                                 "frac_val_rows_seen_in_train": frac_raw})
+        leak_scaffold_by_grp[grp] = leak_scaffold
+        leak_raw_by_grp[grp] = leak_raw
+
+    def _print_table(title: str, leak_by_grp: Dict[str, Dict[str, List[float]]]) -> None:
+        print(f"\n{title}")
+        print(f"  {'group by':<22s}" + "".join(f"{'leaks ' + n:>16s}" for n in base_keys))
+        for grp in group_keys:
+            line = f"  {grp:<22s}"
+            for other in base_keys:
+                if other == grp:
+                    line += f"{'-':>16s}"
+                else:
+                    arr = np.array(leak_by_grp[grp][other])
+                    cell = f"{100 * arr.mean():.1f}±{100 * arr.std():.1f}%"
+                    line += f"{cell:>16s}"
+            print(line)
+
+    _print_table("5a. SCAFFOLD leakage (same scaffold as a training row's):",
+                 leak_scaffold_by_grp)
+    _print_table("5b. RAW-SMILES leakage (exact literal-duplicate component reuse):",
+                 leak_raw_by_grp)
     return pd.DataFrame(rows)
 
 
@@ -719,41 +767,45 @@ class _Tee:
 
 
 @contextmanager
-def tee_stdout_to_file(log_path: Path) -> Iterator[None]:
-    """Duplicate everything written to stdout into `log_path` as well, for the duration.
+def tee_stdout_to_file(report_path: Path) -> Iterator[None]:
+    """Duplicate everything written to stdout into `report_path` as well, for the duration.
 
     Args:
-        log_path: File to create (parent directories included) and append console
-            output to.
+        report_path: File to create (parent directories included) and write console
+            output to. Opened in "w" mode, so an existing file is overwritten.
     """
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_fh = open(log_path, "w")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_fh = open(report_path, "w")
     original_stdout = sys.stdout
-    sys.stdout = _Tee(original_stdout, log_fh)
+    sys.stdout = _Tee(original_stdout, report_fh)
     try:
         yield
     finally:
         sys.stdout = original_stdout
-        log_fh.close()
+        report_fh.close()
 
 
-def resolve_log_path(input_csv: str, output_dir: Optional[str], log_file: Optional[str]) -> Path:
-    """Pick where to write the console-output log, unless the user gave an explicit path.
+def resolve_report_path(input_csv: str, output_dir: Optional[str],
+                        report_file: Optional[str]) -> Path:
+    """Pick where to (over)write the console-output report, unless given an explicit path.
+
+    Unlike a timestamped log, this always resolves to the same path for a given input,
+    so re-running the analysis overwrites the previous report instead of accumulating
+    one file per run.
 
     Args:
         input_csv: Path to the CSV being analysed, used to name the auto-generated file.
         output_dir: Value of --output-dir, or None.
-        log_file: Value of --log-file, or None to auto-name.
+        report_file: Value of --report-file, or None to auto-name.
 
     Returns:
-        Path the log should be written to.
+        Path the report should be written to.
     """
-    if log_file:
-        return Path(log_file)
+    if report_file:
+        return Path(report_file)
     stem = Path(input_csv).stem
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    name = f"scaffold_analysis_{stem}_{timestamp}.log"
-    base = Path(output_dir) if output_dir else Path("outputs/logs/scaffold_analysis")
+    name = f"scaffold_analysis_{stem}.txt"
+    base = Path(output_dir) if output_dir else Path("outputs/reports/scaffold_analysis")
     return base / name
 
 
@@ -763,11 +815,12 @@ def main() -> None:
     keys = parse_group_cols(args.group_cols, df)
     keys = add_auto_combos(keys, args.combos, args.combo_keys, args.combo_mode)
     base_keys = [n for n, (mode, _) in keys.items() if mode == "single"]
+    raw_cols = {n: keys[n][1][0] for n in base_keys}
     targets = select_targets(df, args.targets, keys, args.min_target_rows)
 
-    log_path = resolve_log_path(args.input_csv, args.output_dir, args.log_file)
+    report_path = resolve_report_path(args.input_csv, args.output_dir, args.report_file)
 
-    with tee_stdout_to_file(log_path):
+    with tee_stdout_to_file(report_path):
         print(f"Loaded {len(df)} rows from {args.input_csv}")
         print(f"Candidate keys ({len(keys)}): {', '.join(keys)}")
         print(f"Targets ({len(targets)}): {', '.join(targets) if targets else '(none)'}")
@@ -781,7 +834,7 @@ def main() -> None:
         print(f"\n[reports 4-6 use the '{primary}' scaffold flavour]")
 
         group_stats = report_group_sizes(group_keys, len(df), args.n_folds)
-        leakage = report_leakage(group_keys, base_keys, args.cv_config, args.n_folds)
+        leakage = report_leakage(df, group_keys, base_keys, raw_cols, args.cv_config, args.n_folds)
         eta = report_eta_squared(df, group_keys, targets)
 
         if args.output_dir:
@@ -797,7 +850,7 @@ def main() -> None:
                 written.append("eta_squared.csv")
             print(f"\nSaved → {out_dir}/{{{', '.join(written)}}}")
 
-        print(f"\nFull console output written to {log_path}")
+        print(f"\nFull console report written to {report_path}")
 
 
 if __name__ == "__main__":
