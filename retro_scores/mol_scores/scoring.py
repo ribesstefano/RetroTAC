@@ -25,8 +25,14 @@ Usage
 
 import numpy as np
 import pandas as pd
+from rdkit import RDLogger
 
 from . import sa_score, sc_score, ra_score, syba_score, gasa_score, fs_score
+
+# RAscore fingerprints each molecule with RDKit's legacy Morgan API, deprecated
+# in the venv-scoring rdkit pin -- silence the resulting per-molecule
+# "please use MorganGenerator" spam (18k+ console writes on a full run).
+RDLogger.DisableLog("rdApp.*")
 
 # Each scorer module owns its output column names via a module-level
 # COLUMNS constant, so the NaN-fallback path below can't drift out of sync
