@@ -12,7 +12,7 @@ cd $SLURM_SUBMIT_DIR
 MODELS=${MODELS:-"xgb_20260828_182305 mlp_20260828_182305 gnn_20260828_182305"}
 CONFIG=${CONFIG:-config/models_config_routes.yaml}
 OUTPUT_ROOT=${OUTPUT_ROOT:-outputs}
-OUT=${OUT:-routes_20260828_182305}
+OUT=${OUT:-results_20260828_182305}
 TEST_CSV=${TEST_CSV:-data/sets/routes_test.csv}
 RANK_METRIC=${RANK_METRIC:-r2}
 

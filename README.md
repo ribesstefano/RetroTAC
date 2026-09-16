@@ -19,10 +19,9 @@ We do not enforce the output of the model between 0 and 1, so that if the model 
 Get molecular-based synthesizability scores:
 
 ```bash
-apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
-    python retro_scores/synthesizability_scores.py \
+apptainer run --nv --writable-tmpfs $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
         data/routes/routes.csv \
-        data/retro_scoring/routes_mol_scores.csv \
+        data/retro_scoring/routes_mol_scored.csv \
         --smiles-col molecule
 ```
 
@@ -39,18 +38,36 @@ apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
         --smiles-col molecule
 ```
 
+
+```bash
+srun -A berzelius-2026-62 -p berzelius --gpus=1 --time=00:30:00 --pty \
+  apptainer run --nv --writable-tmpfs $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
+    data/routes/routes_scored_with_components.csv \
+    data/retro_scoring/routes_mol_synth_scored_v2.csv \
+    --smiles-col smiles \
+    --keep-all-columns
+```
+
+
 ### Remove Duplicates
 
 Remove duplicates by taking the highest synthesizability score for each unique SMILES string.
 
 ```bash
 apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
-  python scripts/dataset/dedupe_routes.py data/sets/routes_train_val.csv \
-    --output data/sets/routes_train_val_deduped.csv
+  python scripts/dataset/dedupe_routes.py \
+    --output data/routes/routes_scored_deduped.csv \
+    data/routes/routes_scored.csv
 
 apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
-  python scripts/dataset/dedupe_routes.py data/sets/routes_test.csv \
-    --output data/sets/routes_test_deduped.csv
+  python scripts/dataset/dedupe_routes.py \
+    --output data/sets/routes_train_val_deduped.csv \
+    data/sets/routes_train_val.csv
+
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/dataset/dedupe_routes.py \
+    --output data/sets/routes_test_deduped.csv \
+    data/sets/routes_test.csv
 ```
 
 ### Add Component Splits
@@ -59,7 +76,7 @@ Join SMILES CSV with scored routes with the output from the PROTAC-Splitter, whi
 
 ```bash
 apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
-  python scripts/dataset/add_component_splits.py data/routes/routes_scored.csv \
+  python scripts/dataset/add_component_splits.py data/routes/routes_scored_deduped.csv \
   data/tack/tack_smiles_split.csv \
   --output data/routes/routes_scored_with_components.csv
 ```
@@ -77,6 +94,22 @@ apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
 Results:
 
 ```
+  cutoff=0.500: 3607 clusters, silhouette=-0.4684, achieved=10.00%
+  cutoff=0.550: 2596 clusters, silhouette=-0.4512, achieved=10.01%
+  cutoff=0.600: 1747 clusters, silhouette=-0.4050, achieved=10.01%
+  cutoff=0.650: 1136 clusters, silhouette=-0.3733, achieved=10.06%
+  cutoff=0.700: 709 clusters, silhouette=-0.3120, achieved=10.59%
+  cutoff=0.750: 403 clusters, silhouette=-0.2440, achieved=13.48%
+  cutoff=0.800: 176 clusters, silhouette=-0.1722, achieved=14.76%
+  cutoff=0.850: 49 clusters, silhouette=-0.0934, achieved=12.35%
+  cutoff=0.900: 3 clusters, silhouette=-0.0133, achieved=100.00%
+  cutoff=0.950: 1 clusters, silhouette=-1.0000, achieved=100.00%
+  Chosen cutoff=0.850: quality_score=0.6388, achieved=12.35% (target 10.0%).
+Saved → data/sets/adaptive_cluster_metrics.csv
+train_val: 15844 rows | test (held-out): 2232 rows
+Saved → data/sets/routes_train_val.csv
+Saved → data/sets/routes_test.csv
+
 === Target column 'synthesizability' distribution: train_val vs. held-out test ===
 |       |    train_val |        test |
 |-------|--------------|-------------|
@@ -234,6 +267,38 @@ srun -A berzelius-2026-62 -p berzelius --gpus=1 --time=00:30:00 --pty \
 #### Plotting
 
 ```bash
+# Synthesizability scores correlation
+# --method spearman|pearson|kendall] [--columns ...] [
+
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/dataset/correlation_analysis.py \
+    data/retro_scoring/routes_mol_synth_scored.csv \
+    figures/ \
+    --method spearman \
+    --high-corr-threshold 0.7 \
+    --target-col synthesizability \
+    --columns synthesizability struct_n_steps struct_n_BB struct_max_depth struct_lls struct_coupling_fraction struct_avg_branching struct_fragment_balance \
+    --prefix corr_tree_struct
+
+# Correlation matrix only
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/dataset/correlation_analysis.py \
+    data/retro_scoring/routes_mol_synth_scored.csv \
+    figures/ \
+    --method spearman \
+    --high-corr-threshold 0.7 \
+    --target-col synthesizability \
+    --columns synthesizability sa_score sc_score ra_score syba_score gasa_pred fs_score \
+    --prefix corr_mol_scores
+
+# Figure 2a
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/dataset/plot_fig2.py \
+    data/retro_scoring/routes_mol_synth_scored.csv \
+    data/sets/routes_train_val.csv data/sets/routes_test.csv \
+    figures/
+
+# Models comparison: Tukey HSD and scatter plots
 apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
   python scripts/models/plotting_evaluation.py --results outputs/results/results_20260828_182305
 
@@ -254,7 +319,7 @@ apptainer exec --nv $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
     --models xgb_20260828_182305 mlp_20260828_182305 gnn_20260828_182305 \
     --config config/models_config_routes.yaml \
     --output-root outputs \
-    --out routes_20260828_182305 \
+    --out results_20260828_182305 \
     --test-csv data/sets/routes_test.csv \
     --ensemble
 
@@ -327,12 +392,27 @@ apptainer exec --nv $(bash apptainer/bind_live_repo.sh) apptainer/inference.sif 
     --verbose
 ```
 
-We need to compare the predictions, remembering that 0 is easy and 1 is hard for DeepPSA, while 0 is hard and 1 is easy for our model. So we need to invert the DeepPSA predictions before calculating the correlation.
+We compare against DeepPSA's `es` column (its softmax probability of being easy to
+synthesize), not `hs`/`lable_pre`: `es`/`hs` are the two outputs of the same softmax
+(`es + hs == 1`) and `lable_pre` is just DeepPSA's own threshold-at-0.5 call on `es`, so
+`es` alone carries everything the other two would. `es` already uses our convention
+(higher = easier), so unlike a categorical 0/1 label it needs no inversion. Pearson and
+Spearman use `es`'s raw value; Kendall's tau instead thresholds `es` at 0.5 and our true
+synthesizability/RetroTAC prediction at `--threshold` (T, default 0.7).
 
-- get correlation between true real values and categorical DeepPSA predictions
-- get correlation between RetroTAC predicted real values and categorical DeepPSA predictions
+- get correlation between true real values and DeepPSA `es`
+- get correlation between RetroTAC predicted real values and DeepPSA `es`
 
 We expect/hope to see a low correlation true/DeepPSA and so a low one for RetroTAC/DeepPSA as well.
+
+```bash
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/deeppsa/compare_deeppsa_retrotac.py \
+    --deeppsa-preds data/deeppsa/deeppsa_preds.csv \
+    --retrotac-preds data/deeppsa/retrotac_preds.csv \
+    --shared-test-set data/deeppsa/shared_test_set/shared_test_set.csv \
+    --caruana-selection outputs/results/results_20260828_182305/caruana_selection_smiles.csv
+```
 
 ## Results
 
@@ -414,5 +494,62 @@ apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
         --config config/route_scoring.yaml \
         --route-col route \
         --resolved-col resolved \
-        --smiles-col molecule
+        --smiles-col molecule \
+        --output-dir outputs/negative_data/ \
+        --make-plots
+
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
+    python retro_scores/route_scores/route_tree_score.py \
+        --input data/negative_data/routes_confident_low.csv \
+        --output data/negative_data/routes_confident_low_scored.csv \
+        --config config/route_scoring.yaml \
+        --route-col route \
+        --resolved-col resolved \
+        --smiles-col molecule \
+        --output-dir outputs/negative_data/ \
+        --make-plots
+
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
+    python retro_scores/route_scores/route_tree_score.py \
+        --input data/negative_data/routes_uncertain_high.csv \
+        --output data/negative_data/routes_uncertain_high_scored.csv \
+        --config config/route_scoring.yaml \
+        --route-col route \
+        --resolved-col resolved \
+        --smiles-col molecule \
+        --output-dir outputs/negative_data/ \
+        --make-plots
+
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
+    python retro_scores/route_scores/route_tree_score.py \
+        --input data/negative_data/routes_uncertain_low.csv \
+        --output data/negative_data/routes_uncertain_low_scored.csv \
+        --config config/route_scoring.yaml \
+        --route-col route \
+        --resolved-col resolved \
+        --smiles-col molecule \
+        --output-dir outputs/negative_data/ \
+        --make-plots
+```
+
+Plotting some of the molecules:
+
+```bash
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
+    python scripts/dataset/plot_dataset.py \
+      data/negative_data/routes_confident_low_scored.csv \
+      --smiles-col smiles \
+      --target-col synthesizability \
+      --method maxmin \
+      --n-mols 20 \
+      --output figures/routes_confident_low_maxmin.png
+
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
+    python scripts/dataset/plot_dataset.py \
+      outputs/negative_data/confident_low_predictions.csv \
+      --smiles-col "PROTAC SMILES" \
+      --target-col prediction \
+      --method maxmin \
+      --n-mols 20 \
+      --output figures/routes_confident_low_preds_maxmin.png
 ```
