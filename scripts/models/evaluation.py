@@ -1085,6 +1085,7 @@ def run_ensemble_strategies(
     clf_threshold: float, caruana_sel_frac: float = 0.2,
     caruana_iterations: int = 100, random_seed: int = 42,
     extra_predictors: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None,
+    smiles: Optional[List[str]] = None,
 ) -> pd.DataFrame:
     """Score best_single / uniform / best_backend / Caruana ensembles over the fold-model pool.
 
@@ -1115,6 +1116,11 @@ def run_ensemble_strategies(
             they are sliced onto the same evaluation split and scored through
             the same metrics, so their uncertainty lands in the same table --
             on the same rows -- as the ensembles' member spread.
+        smiles: SMILES strings, same order/length as `y_true`, i.e. the same
+            row order as the test CSV `fold_predictions`/`y_true` were built
+            from. When given, the rows Caruana's greedy selection actually saw
+            (`sel_idx` below) are written to `{out_dir}/caruana_selection_smiles.csv`
+            for provenance. None skips this (e.g. no test CSV available).
 
     Returns:
         DataFrame of metrics (one row per strategy and per extra predictor,
@@ -1126,7 +1132,8 @@ def run_ensemble_strategies(
     Raises:
         RuntimeError: If `fold_predictions` is empty.
         ValueError: If an `extra_predictors` array doesn't cover the same rows
-            as `y_true`.
+            as `y_true`, or if `smiles` is given but doesn't cover the same
+            rows as `y_true`.
     """
     if not fold_predictions:
         raise RuntimeError("No fold-model predictions to build ensembles from.")
@@ -1138,6 +1145,21 @@ def run_ensemble_strategies(
     sel_idx, eval_idx = perm[:n_sel], perm[n_sel:]
     print(f"\n  Caruana selection split: {len(sel_idx)} selection / {len(eval_idx)} evaluation samples "
           f"(every strategy is scored on the {len(eval_idx)}-sample evaluation split)")
+
+    if smiles is not None:
+        if len(smiles) != n:
+            raise ValueError(
+                f"smiles covers {len(smiles)} rows but fold predictions cover {n}; "
+                "both must come from the same test CSV."
+            )
+        sel_smiles_path = out_dir / "caruana_selection_smiles.csv"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame({
+            "row_index": sel_idx,
+            "smiles": np.asarray(smiles)[sel_idx],
+            "y_true": y_true[sel_idx],
+        }).sort_values("row_index").to_csv(sel_smiles_path, index=False)
+        print(f"  Caruana selection SMILES ({len(sel_idx)} rows) -> {sel_smiles_path}")
 
     y_eval = y_true[eval_idx]
     eval_preds = {k: v[eval_idx] for k, v in fold_predictions.items()}
@@ -1318,11 +1340,13 @@ def main() -> None:
                 extra_predictors = evidential_predictors(evidential)
 
             print("\n[2c/3] Scoring ensemble strategies...")
+            ensemble_smiles = pd.read_csv(args.test_csv)[smiles_col].tolist()
             run_ensemble_strategies(
                 fold_predictions, y_true_folds, out_dir, cfg.hpo.classification_threshold,
                 caruana_sel_frac=args.ensemble_caruana_frac,
                 caruana_iterations=args.ensemble_iterations,
                 extra_predictors=extra_predictors,
+                smiles=ensemble_smiles,
             )
     else:
         print("\n[2/3] No --test-csv given; skipping test-set evaluation.")

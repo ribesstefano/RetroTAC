@@ -18,35 +18,52 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import autorank
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+import matplotlib.transforms as mtransforms
 import numpy as np
 import pandas as pd
 from scipy.stats import f_oneway, spearmanr  # noqa: F401  (spearmanr handy if you extend)
-from statsmodels.stats.multicomp import pairwise_tukeyhsd
+from statsmodels.sandbox.stats.multicomp import MultiComparison
+
+import pubstyle as ps
+
+ps.apply_style()
 
 # ── palette ─────────────────────────────────────────────────────────────────
-ROYAL_PURPLE = "#6A4C93"
-DARK_SLATE   = "#2F4F4F"
-DEEP_TEAL    = "#1B7F79"
-FOREST_GREEN = "#2E7D32"
-SIG_RED      = "#CC3333"
-
-COLOR_MAP = {"XGB": DEEP_TEAL, "MLP": FOREST_GREEN, "GNN": ROYAL_PURPLE}
+# Backend -> hue, held fixed across every figure in this file. Per explicit
+# request: XGB blue, GNN orange (the pubstyle contrast pair), MLP violet.
+# NOTE: pubstyle reserves purple for "worse/significantly different" in the
+# Tukey CI panels below -- MLP being violet here as well as (often) purple
+# there is a deliberate departure from that reservation, not an oversight.
+COLOR_MAP = {
+    "XGB": ps.PALETTE["blue"],
+    "GNN": ps.PALETTE["dark_orange"],
+    "MLP": ps.PALETTE["purple"],
+}
+# A couple of ensemble strategies (see plot_ensemble_scatter) get their own
+# deliberate accent in their single-panel scatter, keyed by the pretty name
+# _pretty_strategy() produces. Caruana's green doubles as its usual "winner"
+# meaning, since it is in fact the best strategy in ensemble_strategies.csv.
+STRATEGY_COLOR_MAP = {
+    "Best Single": ps.PALETTE["dark_orange"],
+    "Caruana": ps.PALETTE["green"],
+}
+# Fallback for labels outside COLOR_MAP/STRATEGY_COLOR_MAP.
+DEFAULT_COLOR = ps.PALETTE["blue"]
 
 OUT_DIR = Path("figures")
 
 
 def save_fig(fig: plt.Figure, name: str) -> None:
-    """Save a figure as both PNG and PDF under OUT_DIR.
+    """Save a figure as pdf/svg/png under OUT_DIR.
 
     Args:
         fig: Figure to save.
         name: Base filename (without extension).
     """
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    for ext in ("png", "pdf"):
-        fig.savefig(OUT_DIR / f"{name}.{ext}", dpi=200, bbox_inches="tight")
-    print(f"saved {OUT_DIR / f'{name}.png'}")
+    paths = ps.save_figure(fig, OUT_DIR / name)
+    print(f"saved {paths[0]}")
 
 
 # ── Fig 1: CV fold R2 boxplots (one subplot per model) ──────────────────────
@@ -60,9 +77,8 @@ def plot_cv_boxplots(fold_scores: Dict[str, List[float]], prefix: str = "") -> N
     n     = len(fold_scores)
     ncols = min(3, n)
     nrows = int(np.ceil(n / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3.5 * nrows),
-                             gridspec_kw={"hspace": 0.5, "wspace": 0.4},
-                             squeeze=False)
+    fig, axes = plt.subplots(nrows, ncols, figsize=ps.set_size(subplots=(nrows, ncols)),
+                             layout="constrained", squeeze=False)
     axes = axes.flatten()
 
     all_scores = [s for scores in fold_scores.values() for s in scores]
@@ -71,18 +87,19 @@ def plot_cv_boxplots(fold_scores: Dict[str, List[float]], prefix: str = "") -> N
 
     for i, (label, scores) in enumerate(fold_scores.items()):
         ax    = axes[i]
-        color = next((v for k, v in COLOR_MAP.items() if k in label), DARK_SLATE)
+        color = next((v for k, v in COLOR_MAP.items() if k in label), DEFAULT_COLOR)
+        edge  = ps.darken(color)
         bp = ax.boxplot([scores], positions=[1], patch_artist=True, widths=0.5,
-                        medianprops=dict(color=DARK_SLATE, linewidth=1.8),
-                        whiskerprops=dict(color=DARK_SLATE, linewidth=1.2),
-                        capprops=dict(color=DARK_SLATE, linewidth=1.2),
+                        medianprops=dict(color=edge, linewidth=1.8),
+                        whiskerprops=dict(color=edge, linewidth=1.2),
+                        capprops=dict(color=edge, linewidth=1.2),
                         flierprops=dict(marker="o", markersize=3,
-                                        markerfacecolor=DARK_SLATE, alpha=0.4,
+                                        markerfacecolor=edge, alpha=0.4,
                                         markeredgecolor="none"))
         bp["boxes"][0].set_facecolor(color)
         bp["boxes"][0].set_alpha(0.75)
-        bp["boxes"][0].set_edgecolor(DARK_SLATE)
-        ax.scatter(np.ones(len(scores)), scores, color=DARK_SLATE, zorder=5, s=20, alpha=0.6)
+        bp["boxes"][0].set_edgecolor(edge)
+        ax.scatter(np.ones(len(scores)), scores, color=edge, zorder=5, s=20, alpha=0.6)
         ax.set_ylim(ylim); ax.set_xlim(0.4, 1.6); ax.set_xticks([])
         ax.set_ylabel("R²")
         ax.set_title(f"{label}\nmean={np.mean(scores):.3f}  std={np.std(scores):.3f}",
@@ -107,6 +124,44 @@ METRIC_DISPLAY_NAMES = {
 
 
 # ── Fig 2: simultaneous Tukey HSD confidence intervals, one grid per metric ──
+def _is_stat_color(color, target: str) -> bool:
+    """True if `color` (str or RGBA array, as statsmodels hands back) is `target`."""
+    if isinstance(color, str):
+        return color == target
+    if isinstance(color, np.ndarray):
+        return np.allclose(color.flatten(), mcolors.to_rgba(target))
+    return False
+
+
+def recolor_tukey(ax: plt.Axes) -> None:
+    """Swap statsmodels' hard-coded b/r/0.5 for the reserved stats palette.
+
+    `plot_simultaneous` draws the reference (best) method's interval in blue,
+    significantly different methods in red, and non-significant ones in grey
+    0.5 -- remap those onto `ps.STATS['better']/['worse']/['nonsignificant']`
+    so green/purple/grey keep their reserved, document-wide meaning.
+
+    Args:
+        ax: Axes just drawn by `plot_simultaneous`, recolored in place.
+    """
+    cmap = {"b": ps.STATS["better"], "r": ps.STATS["worse"], "0.5": ps.STATS["nonsignificant"]}
+    for container in ax.containers:
+        for child in container.get_children():
+            cur = child.get_color() if hasattr(child, "get_color") else None
+            for src, dst in cmap.items():
+                if cur is not None and _is_stat_color(cur, src):
+                    child.set_color(dst)
+    for line in ax.get_lines():
+        if line.get_linestyle() == "--" and _is_stat_color(line.get_color(), "0.7"):
+            line.set_color(ps.STATS["reference_line"])
+            line.set_linewidth(1.0)
+            line.set_alpha(0.5)
+        else:
+            for src, dst in cmap.items():
+                if _is_stat_color(line.get_color(), src):
+                    line.set_color(dst)
+
+
 def run_anova(df_in: pd.DataFrame, col: str, group_col: str = "method") -> float:
     """Run a one-way ANOVA on `col`, grouped by `group_col`.
 
@@ -122,6 +177,76 @@ def run_anova(df_in: pd.DataFrame, col: str, group_col: str = "method") -> float
     return float(f_oneway(*groups)[1])
 
 
+def _compute_tukey_results(
+    df_cv: pd.DataFrame, metrics: List[str], group_col: str = "method", alpha: float = 0.05,
+) -> Dict[str, Tuple[object, str]]:
+    """Run pairwise Tukey HSD per metric, ordered worst-to-best per group mean.
+
+    Shared by make_simultaneous_ci_plot and make_fig3 so both draw from the
+    same statistics. Worst-to-best group order (direction per
+    LOWER_IS_BETTER_METRICS) makes `plot_simultaneous` read bottom-to-top
+    toward the winner.
+
+    Args:
+        df_cv: Long-format CV scores frame with `group_col` and every column
+            named in `metrics` (see `build_cv_frames` in evaluation.py).
+        metrics: Metric columns to test. A metric missing from `df_cv` or
+            containing any NaN (e.g. clf_roc_auc on a single-class fold) is
+            skipped.
+        group_col: Name of the grouping column.
+        alpha: Family-wise significance threshold for the Tukey HSD intervals.
+
+    Returns:
+        metric -> (TukeyHSDResults, best_method), in the order given.
+    """
+    tukey_results = {}
+    for metric in metrics:
+        if metric not in df_cv.columns:
+            print(f"_compute_tukey_results: {metric!r} not in df_cv -- skipping.")
+            continue
+        if df_cv[metric].isna().any():
+            print(f"_compute_tukey_results: metric {metric!r} contains NaN values, skipping...")
+            continue
+        higher_is_better = metric not in LOWER_IS_BETTER_METRICS
+        order = (df_cv.groupby(group_col)[metric].mean()
+                .sort_values(ascending=higher_is_better).index.tolist())
+        mc = MultiComparison(df_cv[metric], df_cv[group_col], group_order=order)
+        tukey_results[metric] = (mc.tukeyhsd(alpha=alpha), order[-1])
+    return tukey_results
+
+
+def _draw_tukey_panel(
+    ax: plt.Axes, metric: str, tukey_result, best_method: str,
+    df_cv: pd.DataFrame, group_col: str = "method",
+) -> None:
+    """Draw one metric's simultaneous-CI panel into `ax` and recolor/label it.
+
+    Args:
+        ax: Target axes.
+        metric: Metric column name (used for the omnibus ANOVA and the axis label).
+        tukey_result: TukeyHSDResults for this metric, from _compute_tukey_results.
+        best_method: The reference group plot_simultaneous compares every other to.
+        df_cv: Long-format CV scores frame, for the omnibus ANOVA.
+        group_col: Name of the grouping column.
+    """
+    # plot_simultaneous runs `fig.set_size_inches(figsize)` unconditionally --
+    # even when handed an existing `ax`, so it silently resizes OUR figure to
+    # its (10, 6) default. Restore the caller's size afterwards, or every
+    # figure containing one of these panels renders at 10x6 regardless of
+    # what ps.set_size computed (which also starves a fixed-aspect panel
+    # sharing the figure -- see make_fig3).
+    fig = ax.figure
+    size_before = fig.get_size_inches().copy()
+    tukey_result.plot_simultaneous(comparison_name=best_method, ax=ax)
+    fig.set_size_inches(size_before)
+    recolor_tukey(ax)
+    p_omnibus = run_anova(df_cv, metric, group_col=group_col)
+    ax.set_xlabel(METRIC_DISPLAY_NAMES.get(metric, metric.upper()), fontsize=11)
+    ax.set_title(f"p = {p_omnibus:.2e}", fontsize=11)
+    ax.tick_params(axis="y", labelsize=10)
+    ax.grid(False)     # no horizontal rule at each model's tick -- just the CI bars
+
+
 def make_simultaneous_ci_plot(
     df_cv: pd.DataFrame,
     metrics: List[str],
@@ -131,10 +256,10 @@ def make_simultaneous_ci_plot(
 ) -> None:
     """Save a grid of simultaneous Tukey HSD confidence-interval plots, one per metric.
 
-    Uses statsmodels' `pairwise_tukeyhsd` (a one-way, independent-samples
-    ANOVA -- not the repeated-measures/paired-fold design of the CV data) and
-    its own `plot_simultaneous`: every group's CI is drawn relative to the
-    metric's best group (direction per LOWER_IS_BETTER_METRICS), and two
+    Uses statsmodels' `MultiComparison`/`tukeyhsd` (a one-way, independent-
+    samples ANOVA -- not the repeated-measures/paired-fold design of the CV
+    data) via _compute_tukey_results, and _draw_tukey_panel for each panel.
+    Every group's CI is drawn relative to the metric's best group, and two
     groups' intervals overlapping means they are NOT significantly different
     -- this reads directly off the plot for every pair, not just against the
     best, unlike a vs-best-only comparison.
@@ -149,43 +274,76 @@ def make_simultaneous_ci_plot(
         alpha: Family-wise significance threshold for the Tukey HSD intervals.
         prefix: Optional filename prefix for the saved figure.
     """
-    tukey_results = {}
-    for metric in metrics:
-        if metric not in df_cv.columns:
-            print(f"make_simultaneous_ci_plot: {metric!r} not in df_cv -- skipping.")
-            continue
-        if df_cv[metric].isna().any():
-            print(f"make_simultaneous_ci_plot: metric {metric!r} contains NaN values, skipping...")
-            continue
-        tukey_results[metric] = pairwise_tukeyhsd(
-            endog=df_cv[metric], groups=df_cv[group_col], alpha=alpha)
-
+    tukey_results = _compute_tukey_results(df_cv, metrics, group_col, alpha)
     if not tukey_results:
         print("make_simultaneous_ci_plot: no plottable metrics -- skipping.")
         return
 
-    fig, axes = plt.subplots(1, len(tukey_results), figsize=(7 * len(tukey_results), 5), squeeze=False)
-    axes = axes[0]
+    n     = len(tukey_results)
+    ncols = min(2, n)
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=ps.set_size(subplots=(nrows, ncols)),
+                             layout="constrained", squeeze=False)
+    axes = axes.flatten()
 
-    for ax, (metric, tukey_result) in zip(axes, tukey_results.items()):
-        higher_is_better = metric not in LOWER_IS_BETTER_METRICS
-        best_method = (df_cv.groupby(group_col)[metric].mean()
-                      .sort_values(ascending=not higher_is_better).index[0])
-        tukey_result.plot_simultaneous(comparison_name=best_method, ax=ax)
-        p_omnibus = run_anova(df_cv, metric, group_col=group_col)
-        ax.set_xlabel(METRIC_DISPLAY_NAMES.get(metric, metric.upper()), fontsize=11)
-        ax.set_title(f"p = {p_omnibus:.2e}", fontsize=11)
+    for i, (metric, (tukey_result, best_method)) in enumerate(tukey_results.items()):
+        _draw_tukey_panel(axes[i], metric, tukey_result, best_method, df_cv, group_col)
         print(f"  Best method for {metric}: {best_method}")
 
-    for ax in axes:
-        ax.tick_params(axis="y", labelsize=10)
-    fig.suptitle(f"Simultaneous Confidence Intervals\nTukey HSD, FWER={alpha}",
-                fontsize=13, fontweight="bold")
-    fig.tight_layout(rect=[0, 0, 1, 0.88])
+    for j in range(i + 1, len(axes)):
+        axes[j].set_visible(False)
     save_fig(fig, f"{prefix}simultaneous_ci_grid")
 
 
 # ── Fig 3: held-out test set, predicted vs. measured (one panel per model) ──
+def _draw_parity_panel(
+    ax: plt.Axes, y_pred: np.ndarray, y_true: np.ndarray, color: str,
+    thr: float, m: pd.Series, title: str, tick_fs: float = 10,
+) -> None:
+    """Draw one predicted-vs-measured parity panel into `ax`, with a metrics textbox.
+
+    Shared by plot_test_scatter (a grid, one label per panel) and make_fig3
+    (two of these panels beside the Tukey CI grid).
+
+    Args:
+        ax: Target axes.
+        y_pred: Predicted values.
+        y_true: Measured values.
+        color: Marker color for this panel (see COLOR_MAP/STRATEGY_COLOR_MAP).
+        thr: Classification threshold, for the reference cross-hairs.
+        m: This label's row of metrics (mae, rmse, r2, spearman_rho,
+            clf_precision, clf_recall, clf_roc_auc), e.g. metrics_df.loc[label].
+        title: Panel title (the model or strategy name).
+        tick_fs: Tick label font size.
+    """
+    ax.scatter(y_pred, y_true, color=color, alpha=0.35, s=14, edgecolor="none",
+              rasterized=True, zorder=1)
+    ax.plot([0, 1], [0, 1], color="black", linestyle="--", linewidth=1, zorder=2)
+    ax.axhline(thr, color=ps.STATS["reference_line"], linestyle="--", linewidth=1,
+              alpha=0.7, zorder=3)
+    ax.axvline(thr, color=ps.STATS["reference_line"], linestyle="--", linewidth=1,
+              alpha=0.7, zorder=3)
+
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    ax.tick_params(labelsize=tick_fs)
+    ax.set_title(title, fontsize=11, fontweight="bold")
+    ax.grid(alpha=0.3)          # both axes here, unlike the y-only default
+    ax.set_box_aspect(1)        # square: a parity plot must not be stretched
+
+    text = (
+        f"MAE: {m['mae']:.3f}\n"
+        f"RMSE: {m['rmse']:.3f}\n"
+        f"$R^2$: {m['r2']:.2f}\n"
+        f"$\\rho$: {m['spearman_rho']:.2f}\n"
+        f"Precision: {m['clf_precision']:.2f}\n"
+        f"Recall: {m['clf_recall']:.2f}\n"
+        f"AUC: {m['clf_roc_auc']:.2f}"
+    )
+    ax.text(0.03, 0.97, text, transform=ax.transAxes, va="top", ha="left", fontsize=8,
+            bbox=dict(boxstyle="round", facecolor="white", edgecolor="black",
+                      linewidth=0.5, alpha=0.9))
+
+
 def plot_test_scatter(
     predictions: Dict[str, Dict[str, np.ndarray]], metrics_df: pd.DataFrame, prefix: str = "",
 ) -> None:
@@ -204,43 +362,47 @@ def plot_test_scatter(
     n      = len(labels)
     ncols  = min(3, n)
     nrows  = int(np.ceil(n / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(4.3 * ncols, 4.2 * nrows),
-                             gridspec_kw={"hspace": 0.4, "wspace": 0.35}, squeeze=False)
+    # A multi-panel grid (the ncols>1 case, e.g. figures/test_scatter.pdf)
+    # is tight on room for three panels' worth of ticks/labels -- shrink the
+    # axis text there; a single reused panel (plot_ensemble_scatter) has
+    # plenty of space and keeps the normal, larger sizing.
+    compact       = ncols > 1
+    tick_fs       = 8 if compact else ps.TICK_FONTSIZE
+    axis_label_fs = 10 if compact else ps.LABEL_FONTSIZE
+    # ps.set_size's golden-ratio height assumes rectangular cells; these
+    # panels are forced square by set_box_aspect(1) below, so size per-panel
+    # at aspect 1 instead. Overhead is a per-row title (scales with nrows)
+    # plus one shared bottom label strip (fixed, not per-row) -- a flat
+    # height multiplier over-grows for a single reused panel (see
+    # plot_ensemble_scatter) and under-grows a tall multi-row grid.
+    fig_width_in, _ = ps.set_size(fraction=1.0)
+    panel_in    = fig_width_in / ncols
+    fig_height_in = panel_in * nrows + 0.35 * nrows + 0.45
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(fig_width_in, fig_height_in),
+                             layout="constrained", squeeze=False,
+                             sharex=True, sharey=True)
     axes = axes.flatten()
 
     for i, label in enumerate(labels):
         ax     = axes[i]
         y_true = np.asarray(predictions[label]["y_true"], dtype=float).ravel()
         y_pred = np.asarray(predictions[label]["y_pred"], dtype=float).ravel()
-        color  = COLOR_MAP.get(label, DARK_SLATE)
+        color  = COLOR_MAP.get(label, STRATEGY_COLOR_MAP.get(label, DEFAULT_COLOR))
+        m      = metrics_df.loc[label]
+        thr    = float(m["clf_threshold"]) if "clf_threshold" in metrics_df.columns else 0.7
 
-        ax.scatter(y_pred, y_true, color=color, alpha=0.35, s=14, edgecolor="none")
-        ax.plot([0, 1], [0, 1], color="black", linestyle="--", linewidth=1, zorder=1)
-
-        m = metrics_df.loc[label]
-        thr = float(m["clf_threshold"]) if "clf_threshold" in metrics_df.columns else 0.7
-        ax.axhline(thr, color=SIG_RED, linestyle="--", linewidth=0.9, alpha=0.8)
-        ax.axvline(thr, color=SIG_RED, linestyle="--", linewidth=0.9, alpha=0.8)
-
-        ax.set_xlim(0, 1); ax.set_ylim(0, 1)
-        ax.set_xlabel("Predicted synthesizability")
-        ax.set_ylabel("Measured synthesizability")
-        ax.set_title(label, fontsize=11, fontweight="bold")
-
-        text = (
-            f"MAE: {m['mae']:.3f}\n"
-            f"RMSE: {m['rmse']:.3f}\n"
-            f"$R^2$: {m['r2']:.2f}\n"
-            f"$\\rho$: {m['spearman_rho']:.2f}\n"
-            f"Precision: {m['clf_precision']:.2f}\n"
-            f"Recall: {m['clf_recall']:.2f}\n"
-            f"AUC: {m['clf_roc_auc']:.2f}"
-        )
-        ax.text(0.03, 0.97, text, transform=ax.transAxes, va="top", ha="left", fontsize=8,
-                bbox=dict(boxstyle="round", facecolor="white", edgecolor=DARK_SLATE, alpha=0.9))
+        _draw_parity_panel(ax, y_pred, y_true, color, thr, m, title=label, tick_fs=tick_fs)
+        if i % ncols != 0:                        # shared x/y scale: axis labels live once,
+            ax.tick_params(labelleft=False)        # at the figure level, not per panel
 
     for j in range(i + 1, len(axes)):
         axes[j].set_visible(False)
+    # One shared axis-label pair for the whole grid: every panel is the same
+    # x/y quantity for a different model (named by its own title), so a
+    # label per panel is repeated ink that also overflows a narrow column.
+    fig.supxlabel("Predicted synthesizability", fontsize=axis_label_fs, fontweight="bold")
+    fig.supylabel("Measured synthesizability", fontsize=axis_label_fs, fontweight="bold")
     save_fig(fig, f"{prefix}test_scatter")
 
 
@@ -280,14 +442,18 @@ def plot_ensemble_strategies(results_dir: Path, prefix: str = "") -> None:
             with open(p) as f:
                 weights[name] = json.load(f)["weights"]
 
-    labels    = [_pretty_strategy(s) for s in df.index]
-    best      = df["rmse"].idxmin()
-    bar_colors = [ROYAL_PURPLE if s == best else DARK_SLATE for s in df.index]
+    labels = [_pretty_strategy(s) for s in df.index]
+    best   = df["rmse"].idxmin()
+    # Best-vs-rest is a statistical outcome (winner), not a data series --
+    # the reserved green/grey pair is the right one here.
+    bar_colors = [ps.STATS["better"] if s == best else ps.STATS["nonsignificant"] for s in df.index]
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, max(3, len(df) * 0.7 + 1)), gridspec_kw={"wspace": 0.55})
+    fig_w, _  = ps.set_size(fraction=1.0)
+    fig, axes = plt.subplots(1, 3, figsize=(fig_w, max(3, len(df) * 0.7 + 1)),
+                             layout="constrained")
 
     ax = axes[0]
-    bars = ax.barh(labels, df["rmse"], color=bar_colors, alpha=0.85)
+    bars = ax.barh(labels, df["rmse"], color=bar_colors, edgecolor="white")
     for bar, rmse, n_models in zip(bars, df["rmse"], df["n_models"]):
         ax.text(rmse, bar.get_y() + bar.get_height() / 2, f"  {rmse:.4f} (n={int(n_models)})",
                 va="center", fontsize=8)
@@ -296,7 +462,7 @@ def plot_ensemble_strategies(results_dir: Path, prefix: str = "") -> None:
     ax.invert_yaxis()
 
     ax = axes[1]
-    bars = ax.barh(labels, df["r2"], color=bar_colors, alpha=0.85)
+    bars = ax.barh(labels, df["r2"], color=bar_colors, edgecolor="white")
     for bar, r2 in zip(bars, df["r2"]):
         ax.text(r2, bar.get_y() + bar.get_height() / 2, f"  {r2:.3f}", va="center", fontsize=8)
     ax.set_xlabel("R² (higher is better)")
@@ -309,8 +475,8 @@ def plot_ensemble_strategies(results_dir: Path, prefix: str = "") -> None:
     for backend in backends:
         counts = np.array([sum(1 for k in weights.get(s, {}) if k.split("_seed")[0] == backend)
                            for s in df.index])
-        ax.barh(labels, counts, left=bottoms, color=COLOR_MAP.get(backend, DARK_SLATE),
-                alpha=0.85, label=backend)
+        ax.barh(labels, counts, left=bottoms, color=COLOR_MAP.get(backend, DEFAULT_COLOR),
+                edgecolor="white", label=backend)
         bottoms += counts
     ax.set_xlabel("Fold models in ensemble")
     ax.set_title("Composition by backend", fontsize=10)
@@ -394,6 +560,115 @@ def plot_ensemble_scatter(results_dir: Path, prefix: str = "") -> None:
         plot_test_scatter(predictions, row, prefix=f"{prefix}{name}_")
 
 
+# ── Fig 3 (combined): regression Tukey CI grid + two ensemble parity plots ──
+def make_fig3(df_cv: pd.DataFrame, results_dir: Path, prefix: str = "") -> None:
+    """Composite two-block figure: (a) regression Tukey CI grid, (b) Best Single & Caruana parity plots.
+
+    Combines make_simultaneous_ci_plot's regression metrics (r2, rmse, mae,
+    spearman_rho) with two of plot_ensemble_scatter's per-strategy panels
+    into one lettered figure, reusing the same underlying computations
+    (_compute_tukey_results/_draw_tukey_panel,
+    _reconstruct_ensemble_prediction/_draw_parity_panel) rather than
+    duplicating them.
+
+    Args:
+        df_cv: Long-format CV scores frame (see make_simultaneous_ci_plot).
+        results_dir: Directory holding ensemble_strategies.csv,
+            ensemble_weights_*.json, and cv_fold_test_predictions.pkl (an
+            evaluation.py --ensemble --out folder).
+        prefix: Optional filename prefix for the saved figure.
+    """
+    reg_metrics   = ["r2", "rmse", "mae", "spearman_rho"]
+    tukey_results = _compute_tukey_results(df_cv, reg_metrics)
+    if not tukey_results:
+        print("make_fig3: no plottable CI metrics -- skipping.")
+        return
+
+    csv_path = results_dir / "ensemble_strategies.csv"
+    fold_pred_path = results_dir / FOLD_PRED_FILENAME
+    if not csv_path.exists() or not fold_pred_path.exists():
+        print(f"make_fig3: no {csv_path} / {fold_pred_path} -- skipping "
+              f"(run evaluation.py with --ensemble first).")
+        return
+    metrics_df = pd.read_csv(csv_path, index_col=0)
+
+    panels_b = []   # (title, y_pred, y_true, metrics_row, threshold, color)
+    for name, title in (("best_single", "Best Single"), ("caruana", "Caruana")):
+        weights_path = results_dir / f"ensemble_weights_{name}.json"
+        if not weights_path.exists() or name not in metrics_df.index:
+            print(f"make_fig3: no {weights_path} / row -- skipping the {title!r} panel.")
+            continue
+        with open(weights_path) as f:
+            weights = json.load(f)["weights"]
+        y_pred, y_true = _reconstruct_ensemble_prediction(results_dir, weights)
+        m   = metrics_df.loc[name]
+        thr = float(m["clf_threshold"]) if "clf_threshold" in metrics_df.columns else 0.7
+        panels_b.append((title, y_pred, y_true, m, thr, STRATEGY_COLOR_MAP.get(title, DEFAULT_COLOR)))
+
+    if not panels_b:
+        print("make_fig3: no ensemble-scatter panels available -- skipping.")
+        return
+
+    # Panel (a) drives the row height: size it exactly like the standalone
+    # 2x2 Tukey grid (reg_simultaneous_ci_grid.pdf), which is already proven
+    # legible at that width/height. Panel (b)'s squares are set_box_aspect(1),
+    # so give that column just over one row-height of width per square: the
+    # row HEIGHT then binds, and the squares fill it instead of being
+    # width-limited and centered with dead space above and below.
+    width_a, height_a = ps.set_size(subplots=(2, 2))
+    fig_height_in = height_a
+    width_b       = fig_height_in * len(panels_b)
+    fig_width_in  = width_a + width_b
+
+    fig = plt.figure(figsize=(fig_width_in, fig_height_in), layout="constrained")
+    gs  = fig.add_gridspec(1, 2, width_ratios=[width_a, width_b])
+
+    gs_a   = gs[0].subgridspec(2, 2)
+    axes_a = [fig.add_subplot(gs_a[i // 2, i % 2]) for i in range(len(tukey_results))]
+    for ax, (metric, (tukey_result, best_method)) in zip(axes_a, tukey_results.items()):
+        _draw_tukey_panel(ax, metric, tukey_result, best_method, df_cv)
+
+    gs_b   = gs[1].subgridspec(1, len(panels_b))
+    axes_b = [fig.add_subplot(gs_b[0, i]) for i in range(len(panels_b))]
+    for j, (ax, (title, y_pred, y_true, m, thr, color)) in enumerate(zip(axes_b, panels_b)):
+        _draw_parity_panel(ax, y_pred, y_true, color, thr, m, title=title, tick_fs=9)
+        if j == 0:
+            ax.set_ylabel("Measured synthesizability", fontsize=10, fontweight="bold")
+        else:
+            ax.tick_params(labelleft=False)
+
+    # Panel labels at the same height despite (a)'s 2x2 grid and (b)'s single
+    # row differing in shape -- blend the transform (x from axes, y from figure).
+    # in_layout=False: a Text artist is normally reserved-for by
+    # constrained_layout like any other decoration, and this one sits to the
+    # LEFT of its axes -- left uncorrected, that reservation pushes panel (b)
+    # rightward, opening a gap between the two blocks that has nothing to do
+    # with their actual content.
+    trans_a = mtransforms.blended_transform_factory(axes_a[0].transAxes, fig.transFigure)
+    axes_a[0].text(-0.15, 1.0, "(a)", transform=trans_a, fontsize=14, fontweight="bold",
+                  va="top", ha="left", clip_on=False, in_layout=False)
+    trans_b = mtransforms.blended_transform_factory(axes_b[0].transAxes, fig.transFigure)
+    axes_b[0].text(-0.20, 1.0, "(b)", transform=trans_b, fontsize=14, fontweight="bold",
+                  va="top", ha="left", clip_on=False, in_layout=False)
+
+    # One shared, centered x-axis label for panel (b). Per-axes labels would
+    # repeat it, and an invisible spanning axes just gets its label pushed
+    # back onto the tick numbers (constrained_layout re-reserves the margin
+    # and shifts that axes up with it). So: run the layout, freeze it, then
+    # place the label under the measured extent of the two panels.
+    fig.canvas.draw()
+    fig.set_layout_engine("none")
+    renderer = fig.canvas.get_renderer()
+    boxes = [ax.get_tightbbox(renderer).transformed(fig.transFigure.inverted())
+             for ax in axes_b]
+    fig.text((min(b.x0 for b in boxes) + max(b.x1 for b in boxes)) / 2,
+             min(b.y0 for b in boxes) - 0.02,
+             "Predicted synthesizability", ha="center", va="top",
+             fontsize=10, fontweight="bold")
+
+    save_fig(fig, f"{prefix}fig_3")
+
+
 def main() -> None:
     """CLI entry point: load exported CV artifacts and save the comparison figures."""
     ap = argparse.ArgumentParser()
@@ -434,6 +709,7 @@ def main() -> None:
 
     plot_ensemble_strategies(res)
     plot_ensemble_scatter(res)
+    make_fig3(df_cv, res)
 
 
 if __name__ == "__main__":
