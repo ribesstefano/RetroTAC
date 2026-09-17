@@ -20,6 +20,7 @@ from typing import Dict, List, Tuple
 import autorank
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import matplotlib.transforms as mtransforms
 import numpy as np
 import pandas as pd
@@ -77,7 +78,13 @@ def plot_cv_boxplots(fold_scores: Dict[str, List[float]], prefix: str = "") -> N
     n     = len(fold_scores)
     ncols = min(3, n)
     nrows = int(np.ceil(n / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=ps.set_size(subplots=(nrows, ncols)),
+    # Not ps.set_size(subplots=...): its golden-ratio height is per *figure*,
+    # so a single row of three panels comes out barely an inch tall and the
+    # boxes flatten into lines. Size the row directly -- a box needs about
+    # 1.35 in of plot height, plus a strip for the two-line title.
+    fig_width_in = ps.set_size()[0]
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(fig_width_in, 1.35 * nrows + 0.52 * nrows),
                              layout="constrained", squeeze=False)
     axes = axes.flatten()
 
@@ -89,21 +96,21 @@ def plot_cv_boxplots(fold_scores: Dict[str, List[float]], prefix: str = "") -> N
         ax    = axes[i]
         color = next((v for k, v in COLOR_MAP.items() if k in label), DEFAULT_COLOR)
         edge  = ps.darken(color)
-        bp = ax.boxplot([scores], positions=[1], patch_artist=True, widths=0.5,
-                        medianprops=dict(color=edge, linewidth=1.8),
-                        whiskerprops=dict(color=edge, linewidth=1.2),
-                        capprops=dict(color=edge, linewidth=1.2),
-                        flierprops=dict(marker="o", markersize=3,
+        bp = ax.boxplot([scores], positions=[1], patch_artist=True, widths=0.6,
+                        medianprops=dict(color=edge, linewidth=1.2),
+                        whiskerprops=dict(color=edge, linewidth=0.8),
+                        capprops=dict(color=edge, linewidth=0.8),
+                        flierprops=dict(marker="o", markersize=2,
                                         markerfacecolor=edge, alpha=0.4,
                                         markeredgecolor="none"))
         bp["boxes"][0].set_facecolor(color)
         bp["boxes"][0].set_alpha(0.75)
         bp["boxes"][0].set_edgecolor(edge)
-        ax.scatter(np.ones(len(scores)), scores, color=edge, zorder=5, s=20, alpha=0.6)
-        ax.set_ylim(ylim); ax.set_xlim(0.4, 1.6); ax.set_xticks([])
+        ax.scatter(np.ones(len(scores)), scores, color=edge, zorder=5, s=8, alpha=0.6)
+        ax.set_ylim(ylim); ax.set_xlim(0.5, 1.5); ax.set_xticks([])
         ax.set_ylabel("R²")
         ax.set_title(f"{label}\nmean={np.mean(scores):.3f}  std={np.std(scores):.3f}",
-                     fontsize=9, pad=3)
+                     fontsize=ps.TITLE_FONTSIZE, pad=3)
 
     for j in range(i + 1, len(axes)):
         axes[j].set_visible(False)
@@ -113,6 +120,9 @@ def plot_cv_boxplots(fold_scores: Dict[str, List[float]], prefix: str = "") -> N
 # Metrics where a LOWER value is better; every other metric (r2, spearman_rho,
 # the clf_* rates/AUCs, ...) defaults to higher-is-better.
 LOWER_IS_BETTER_METRICS = {"rmse", "mae", "medae", "max_error"}
+
+#: Largest side, in inches, for one square parity panel. See plot_test_scatter.
+MAX_PANEL_IN = 2.6
 
 # metric column -> display name, for grid axis labels/titles
 METRIC_DISPLAY_NAMES = {
@@ -241,9 +251,14 @@ def _draw_tukey_panel(
     fig.set_size_inches(size_before)
     recolor_tukey(ax)
     p_omnibus = run_anova(df_cv, metric, group_col=group_col)
-    ax.set_xlabel(METRIC_DISPLAY_NAMES.get(metric, metric.upper()), fontsize=11)
-    ax.set_title(f"p = {p_omnibus:.2e}", fontsize=11)
-    ax.tick_params(axis="y", labelsize=10)
+    ax.set_xlabel(METRIC_DISPLAY_NAMES.get(metric, metric.upper()), fontsize=ps.LABEL_FONTSIZE)
+    ax.set_title(f"p = {p_omnibus:.2e}", fontsize=ps.TITLE_FONTSIZE)
+    ax.tick_params(axis="y", labelsize=ps.TICK_FONTSIZE)
+    # A metric whose groups differ in the third decimal (MAE here) gets
+    # matplotlib's default ~8 ticks, and eight 5-character labels do not fit
+    # across a half-width panel -- they overlap into one grey smear. Cap the
+    # count instead of shrinking the type below everything else in the figure.
+    ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=4, min_n_ticks=3))
     ax.grid(False)     # no horizontal rule at each model's tick -- just the CI bars
 
 
@@ -298,12 +313,12 @@ def make_simultaneous_ci_plot(
 # ── Fig 3: held-out test set, predicted vs. measured (one panel per model) ──
 def _draw_parity_panel(
     ax: plt.Axes, y_pred: np.ndarray, y_true: np.ndarray, color: str,
-    thr: float, m: pd.Series, title: str, tick_fs: float = 10,
+    thr: float, m: pd.Series, title: str, tick_fs: float = ps.TICK_FONTSIZE,
 ) -> None:
     """Draw one predicted-vs-measured parity panel into `ax`, with a metrics textbox.
 
     Shared by plot_test_scatter (a grid, one label per panel) and make_fig3
-    (two of these panels beside the Tukey CI grid).
+    (two of these panels in the row below the Tukey CI grid).
 
     Args:
         ax: Target axes.
@@ -316,17 +331,18 @@ def _draw_parity_panel(
         title: Panel title (the model or strategy name).
         tick_fs: Tick label font size.
     """
-    ax.scatter(y_pred, y_true, color=color, alpha=0.35, s=14, edgecolor="none",
+    ax.scatter(y_pred, y_true, color=color, alpha=0.35, s=5, edgecolor="none",
               rasterized=True, zorder=1)
-    ax.plot([0, 1], [0, 1], color="black", linestyle="--", linewidth=1, zorder=2)
-    ax.axhline(thr, color=ps.STATS["reference_line"], linestyle="--", linewidth=1,
+    ax.plot([0, 1], [0, 1], color="black", linestyle="--", linewidth=0.8, zorder=2)
+    ax.axhline(thr, color=ps.STATS["reference_line"], linestyle="--", linewidth=0.6,
               alpha=0.7, zorder=3)
-    ax.axvline(thr, color=ps.STATS["reference_line"], linestyle="--", linewidth=1,
+    ax.axvline(thr, color=ps.STATS["reference_line"], linestyle="--", linewidth=0.6,
               alpha=0.7, zorder=3)
 
     ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    ax.set_xticks(np.arange(0, 1.01, 0.25)); ax.set_yticks(np.arange(0, 1.01, 0.25))
     ax.tick_params(labelsize=tick_fs)
-    ax.set_title(title, fontsize=11, fontweight="bold")
+    ax.set_title(title, fontsize=ps.TITLE_FONTSIZE, fontweight="bold")
     ax.grid(alpha=0.3)          # both axes here, unlike the y-only default
     ax.set_box_aspect(1)        # square: a parity plot must not be stretched
 
@@ -339,9 +355,10 @@ def _draw_parity_panel(
         f"Recall: {m['clf_recall']:.2f}\n"
         f"AUC: {m['clf_roc_auc']:.2f}"
     )
-    ax.text(0.03, 0.97, text, transform=ax.transAxes, va="top", ha="left", fontsize=8,
-            bbox=dict(boxstyle="round", facecolor="white", edgecolor="black",
-                      linewidth=0.5, alpha=0.9))
+    ax.text(0.03, 0.97, text, transform=ax.transAxes, va="top", ha="left",
+            fontsize=ps.ANNOT_FONTSIZE, linespacing=1.25,
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="black",
+                      linewidth=0.4, alpha=0.9))
 
 
 def plot_test_scatter(
@@ -367,8 +384,8 @@ def plot_test_scatter(
     # axis text there; a single reused panel (plot_ensemble_scatter) has
     # plenty of space and keeps the normal, larger sizing.
     compact       = ncols > 1
-    tick_fs       = 8 if compact else ps.TICK_FONTSIZE
-    axis_label_fs = 10 if compact else ps.LABEL_FONTSIZE
+    tick_fs       = ps.TICK_FONTSIZE - 1 if compact else ps.TICK_FONTSIZE
+    axis_label_fs = ps.LABEL_FONTSIZE
     # ps.set_size's golden-ratio height assumes rectangular cells; these
     # panels are forced square by set_box_aspect(1) below, so size per-panel
     # at aspect 1 instead. Overhead is a per-row title (scales with nrows)
@@ -376,8 +393,16 @@ def plot_test_scatter(
     # height multiplier over-grows for a single reused panel (see
     # plot_ensemble_scatter) and under-grows a tall multi-row grid.
     fig_width_in, _ = ps.set_size(fraction=1.0)
-    panel_in    = fig_width_in / ncols
-    fig_height_in = panel_in * nrows + 0.35 * nrows + 0.45
+    # The squares share one y-label strip on the left, so the width they
+    # actually divide up is the figure minus that strip -- sizing off the full
+    # width over-estimates the square and leaves a band of dead space under
+    # the row (the page is saved at exactly figsize, so nothing crops it).
+    # MAX_PANEL_IN keeps the one-panel case (plot_ensemble_scatter) from
+    # swelling into a 5 in square: every figure in the project is authored at
+    # \linewidth so that it can be imported at 100%, and a lone panel is
+    # centered in that width rather than stretched to fill it.
+    panel_in      = min((fig_width_in - 0.55) / ncols, MAX_PANEL_IN)
+    fig_height_in = panel_in * nrows + 0.30 * nrows + 0.45
     fig, axes = plt.subplots(nrows, ncols,
                              figsize=(fig_width_in, fig_height_in),
                              layout="constrained", squeeze=False,
@@ -449,25 +474,28 @@ def plot_ensemble_strategies(results_dir: Path, prefix: str = "") -> None:
     bar_colors = [ps.STATS["better"] if s == best else ps.STATS["nonsignificant"] for s in df.index]
 
     fig_w, _  = ps.set_size(fraction=1.0)
-    fig, axes = plt.subplots(1, 3, figsize=(fig_w, max(3, len(df) * 0.7 + 1)),
-                             layout="constrained")
+    fig, axes = plt.subplots(1, 3, figsize=(fig_w, max(2.0, len(df) * 0.42 + 0.95)),
+                             layout="constrained", sharey=True)
+    # constrained_layout reserves height for a title but not width: a title
+    # centered on the rightmost axes simply overhangs the canvas, and with no
+    # tight bbox to grow into it is clipped. Inset the layout a little so the
+    # overhang has somewhere to go, and keep the strings short below.
+    fig.get_layout_engine().set(rect=(0.004, 0, 0.992, 1))
 
     ax = axes[0]
     bars = ax.barh(labels, df["rmse"], color=bar_colors, edgecolor="white")
     for bar, rmse, n_models in zip(bars, df["rmse"], df["n_models"]):
         ax.text(rmse, bar.get_y() + bar.get_height() / 2, f"  {rmse:.4f} (n={int(n_models)})",
-                va="center", fontsize=8)
+                va="center", fontsize=ps.ANNOT_FONTSIZE)
     ax.set_xlabel("RMSE (lower is better)")
-    ax.set_title("Test RMSE", fontsize=10)
-    ax.invert_yaxis()
+    ax.set_title("Test RMSE", fontsize=ps.TITLE_FONTSIZE)
 
     ax = axes[1]
     bars = ax.barh(labels, df["r2"], color=bar_colors, edgecolor="white")
     for bar, r2 in zip(bars, df["r2"]):
-        ax.text(r2, bar.get_y() + bar.get_height() / 2, f"  {r2:.3f}", va="center", fontsize=8)
+        ax.text(r2, bar.get_y() + bar.get_height() / 2, f"  {r2:.3f}", va="center", fontsize=ps.ANNOT_FONTSIZE)
     ax.set_xlabel("R² (higher is better)")
-    ax.set_title("Test R²", fontsize=10)
-    ax.invert_yaxis()
+    ax.set_title("Test R²", fontsize=ps.TITLE_FONTSIZE)
 
     ax = axes[2]
     backends = sorted({k.split("_seed")[0] for w in weights.values() for k in w})
@@ -478,12 +506,15 @@ def plot_ensemble_strategies(results_dir: Path, prefix: str = "") -> None:
         ax.barh(labels, counts, left=bottoms, color=COLOR_MAP.get(backend, DEFAULT_COLOR),
                 edgecolor="white", label=backend)
         bottoms += counts
-    ax.set_xlabel("Fold models in ensemble")
-    ax.set_title("Composition by backend", fontsize=10)
-    ax.legend(fontsize=8, loc="lower right")
-    ax.invert_yaxis()
+    ax.set_xlabel("Fold models")
+    ax.set_title("Composition", fontsize=ps.TITLE_FONTSIZE)
+    ax.legend(fontsize=ps.LEGEND_FONTSIZE, loc="lower right")
+    # Once, not per panel: the three share a y axis, so each call would flip
+    # the whole row back over. Best strategy first, reading top to bottom.
+    axes[0].invert_yaxis()
 
-    fig.suptitle("Ensemble Strategies", fontsize=12, fontweight="bold")
+    fig.suptitle("Ensemble Strategies", fontsize=ps.PANEL_LABEL_FONTSIZE,
+                 fontweight="bold")
     save_fig(fig, f"{prefix}ensemble_strategies")
 
 
@@ -609,19 +640,33 @@ def make_fig3(df_cv: pd.DataFrame, results_dir: Path, prefix: str = "") -> None:
         print("make_fig3: no ensemble-scatter panels available -- skipping.")
         return
 
-    # Panel (a) drives the row height: size it exactly like the standalone
-    # 2x2 Tukey grid (reg_simultaneous_ci_grid.pdf), which is already proven
-    # legible at that width/height. Panel (b)'s squares are set_box_aspect(1),
-    # so give that column just over one row-height of width per square: the
-    # row HEIGHT then binds, and the squares fill it instead of being
-    # width-limited and centered with dead space above and below.
-    width_a, height_a = ps.set_size(subplots=(2, 2))
-    fig_height_in = height_a
-    width_b       = fig_height_in * len(panels_b)
-    fig_width_in  = width_a + width_b
+    # Two stacked blocks, not two side-by-side ones. The figure is written at
+    # the document's \linewidth and imported at 100% (see pubstyle.set_size),
+    # so width is a hard budget: six panels in one row would each get under an
+    # inch. Stacking also gives both blocks their natural aspect -- a CI panel
+    # with three groups wants to be wide and short, a parity plot wants to be
+    # square -- instead of splitting the difference.
+    fig_width_in = ps.set_size()[0]
+    # (a): two rows of CI panels. Each needs room for three group rows, an
+    # x label and the p-value title; below ~1.2 in per row the group labels
+    # start colliding with the intervals.
+    height_a = 1.16 * int(np.ceil(len(tukey_results) / 2))
+    # (b): the squares are set_box_aspect(1) and share the full width, so each
+    # is about (width - the left labels) / n wide; give the row that much
+    # height plus a strip for the tick labels, the title and the shared x
+    # label, or the squares get height-limited and leave dead space either
+    # side of the row.
+    height_b = (fig_width_in - 0.55) / len(panels_b) + 0.62
+    # Headroom for the (a) letter. It is placed with in_layout=False (see
+    # below), so constrained_layout does not reserve for it -- and the page is
+    # written at exactly figsize, with no tight bbox to rescue anything that
+    # lands outside. Without this strip the letter is sliced off at the top.
+    letter_pad_in = 0.16
+    fig_height_in = height_a + height_b + letter_pad_in
 
     fig = plt.figure(figsize=(fig_width_in, fig_height_in), layout="constrained")
-    gs  = fig.add_gridspec(1, 2, width_ratios=[width_a, width_b])
+    fig.get_layout_engine().set(rect=(0, 0, 1, 1 - letter_pad_in / fig_height_in))
+    gs  = fig.add_gridspec(2, 1, height_ratios=[height_a, height_b], hspace=0.06)
 
     gs_a   = gs[0].subgridspec(2, 2)
     axes_a = [fig.add_subplot(gs_a[i // 2, i % 2]) for i in range(len(tukey_results))]
@@ -631,40 +676,32 @@ def make_fig3(df_cv: pd.DataFrame, results_dir: Path, prefix: str = "") -> None:
     gs_b   = gs[1].subgridspec(1, len(panels_b))
     axes_b = [fig.add_subplot(gs_b[0, i]) for i in range(len(panels_b))]
     for j, (ax, (title, y_pred, y_true, m, thr, color)) in enumerate(zip(axes_b, panels_b)):
-        _draw_parity_panel(ax, y_pred, y_true, color, thr, m, title=title, tick_fs=9)
+        _draw_parity_panel(ax, y_pred, y_true, color, thr, m, title=title)
         if j == 0:
-            ax.set_ylabel("Measured synthesizability", fontsize=10, fontweight="bold")
+            ax.set_ylabel("Measured synthesizability")
         else:
             ax.tick_params(labelleft=False)
+    # Both (b) panels show the same quantity on x, so the label belongs to the
+    # row, not to each panel. (b) is the bottom row and spans the full width,
+    # so the figure-level label lands centered under it -- and constrained
+    # layout reserves its strip, unlike a label placed after the fact.
+    fig.supxlabel("Predicted synthesizability", fontsize=ps.LABEL_FONTSIZE,
+                  fontweight="bold")
 
-    # Panel labels at the same height despite (a)'s 2x2 grid and (b)'s single
-    # row differing in shape -- blend the transform (x from axes, y from figure).
-    # in_layout=False: a Text artist is normally reserved-for by
-    # constrained_layout like any other decoration, and this one sits to the
-    # LEFT of its axes -- left uncorrected, that reservation pushes panel (b)
-    # rightward, opening a gap between the two blocks that has nothing to do
-    # with their actual content.
-    trans_a = mtransforms.blended_transform_factory(axes_a[0].transAxes, fig.transFigure)
-    axes_a[0].text(-0.15, 1.0, "(a)", transform=trans_a, fontsize=14, fontweight="bold",
-                  va="top", ha="left", clip_on=False, in_layout=False)
-    trans_b = mtransforms.blended_transform_factory(axes_b[0].transAxes, fig.transFigure)
-    axes_b[0].text(-0.20, 1.0, "(b)", transform=trans_b, fontsize=14, fontweight="bold",
-                  va="top", ha="left", clip_on=False, in_layout=False)
-
-    # One shared, centered x-axis label for panel (b). Per-axes labels would
-    # repeat it, and an invisible spanning axes just gets its label pushed
-    # back onto the tick numbers (constrained_layout re-reserves the margin
-    # and shifts that axes up with it). So: run the layout, freeze it, then
-    # place the label under the measured extent of the two panels.
-    fig.canvas.draw()
-    fig.set_layout_engine("none")
-    renderer = fig.canvas.get_renderer()
-    boxes = [ax.get_tightbbox(renderer).transformed(fig.transFigure.inverted())
-             for ax in axes_b]
-    fig.text((min(b.x0 for b in boxes) + max(b.x1 for b in boxes)) / 2,
-             min(b.y0 for b in boxes) - 0.02,
-             "Predicted synthesizability", ha="center", va="top",
-             fontsize=10, fontweight="bold")
+    # Panel letters aligned on one left margin even though (a)'s and (b)'s
+    # axes start at different x (their y tick labels differ in width): blend
+    # the transform, taking x from the FIGURE and y from each block's own top
+    # axes. in_layout=False because the letter sits outside its axes, and a
+    # reserved-for decoration there would push the whole block inward.
+    for ax, letter in ((axes_a[0], "(a)"), (axes_b[0], "(b)")):
+        trans = mtransforms.blended_transform_factory(fig.transFigure, ax.transAxes)
+        # Lifted a few points clear of the axes: in (b) the topmost y tick
+        # label sits exactly at the axes top, and a letter on that line runs
+        # into it. The offset puts both letters on their block's title line.
+        trans = mtransforms.offset_copy(trans, fig=fig, y=6, units="points")
+        ax.text(0.008, 1.0, letter, transform=trans, fontsize=ps.PANEL_LABEL_FONTSIZE,
+                fontweight="bold", va="bottom", ha="left", clip_on=False,
+                in_layout=False)
 
     save_fig(fig, f"{prefix}fig_3")
 
