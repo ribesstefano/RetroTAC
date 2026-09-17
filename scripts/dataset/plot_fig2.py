@@ -76,43 +76,55 @@ CORRELATION_CMAP = mcolors.LinearSegmentedColormap.from_list(
     "corr_diverging", [ps.PALETTE["blue"], "white", ps.PALETTE["dark_orange"]]
 )
 
-# ── layout knobs ────────────────────────────────────────────────────────────
-# Panel (a) is square, so it ends up as large as whichever of its cell's width
-# or height is smaller. `HEATMAP_SIDE_IN` sets the height side of that (it
-# drives the figure height), and the width ratios below keep its cell at least
-# that wide -- so the heatmap fills its row instead of floating in it with
-# white space underneath.
+# ── layout knobs ────────────────────────────────────────────────
+# Everything here is in inches and adds up to `FIG_WIDTH_IN`, because the
+# figure is written at exactly that size and imported at 100% -- so an inch
+# here is an inch on the page, and a point of type is a point of type. Panel
+# (a) is square, so it ends up as large as the smaller of its cell's width and
+# height: `HEATMAP_SIDE_IN` sets the height side (it drives the figure height)
+# and `PANEL_A_CELL_IN` keeps its cell just wide enough to match, so the
+# heatmap fills its row rather than floating in it.
 
-#: Figure width, in inches. Deliberately wider than pubstyle's single-column
-#: text width (~7 in): two panels side by side at that width leave the
-#: heatmap's 7 rows too cramped to read. Set this to your document's actual
-#: full-width \the\textwidth so the figure is still included at 100% --
-#: scaling on import is what makes font sizes drift between figures.
-FIG_WIDTH_IN = 10.5
+#: Figure width, in inches: the document's own ``\linewidth`` (see
+#: `pubstyle.TEXT_WIDTH_PT`). Do not raise this to buy the heatmap more room --
+#: the figure is imported at ``width=1\linewidth``, so a wider canvas is
+#: scaled back down on import and every font in it shrinks to match. Give the
+#: panels more room by rebalancing the split below, or more height.
+FIG_WIDTH_IN = ps.set_size()[0]
 
 #: Side length, in inches, of panel (a)'s square heatmap. This drives the
 #: figure height; panel (b) is then matched to the same height in `main`.
-HEATMAP_SIDE_IN = 4.45
+#: At 7 rows this is ~0.30 in per cell, which is what a two-decimal
+#: annotation at `pubstyle.ANNOT_FONTSIZE` needs.
+HEATMAP_SIDE_IN = 2.10
 
-#: Width split between the two panels' cells (GridSpec `width_ratios`).
-#: Equal shares put both panels at roughly `HEATMAP_SIDE_IN` wide. Raising
-#: the second number widens (b) further, but (a) is square, so once its cell
-#: drops below `HEATMAP_SIDE_IN` the heatmap shrinks with it.
-PANEL_WIDTH_RATIOS = (0.8, 1.2)
+#: Width of panel (a)'s whole grid cell, in inches: the heatmap square plus
+#: the strip its y tick labels and its ``(a)`` need on the left. Panel (b)
+#: gets the remainder. Keep this close to what (a) actually occupies -- the
+#: figure is no longer saved with a tight bbox, so slack inside a cell stays
+#: in the file as white space instead of being cropped away.
+PANEL_A_CELL_IN = 2.62
 
 #: Gap between the two panels, as a fraction of the mean axes width
 #: (GridSpec's `wspace`). It comes straight out of the panels' own width, so
 #: keep it small -- (b)'s own tick and axis labels already separate the two.
-PANEL_WSPACE = 0.00002
+PANEL_WSPACE = 0.02
 
 #: Figure height beyond panel (a)'s square axes, in inches: room for the
-#: rotated x tick labels and panel (b)'s x label. This is the vertical white
-#: space -- too large and the panels float in an over-tall canvas, too small
-#: and the square heatmap shrinks to make room for the labels.
-FIG_VERTICAL_PAD_IN = 0.62
+#: rotated x tick labels, panel (b)'s x label, and the panel letters above.
+#: This is the vertical white space -- too large and the panels float in an
+#: over-tall canvas, too small and the square heatmap shrinks to make room.
+FIG_VERTICAL_PAD_IN = 0.78
 
-#: In-cell annotation size for the heatmap, in points.
-HEATMAP_ANNOT_SIZE = 9
+#: In-cell annotation size for the heatmap, in points. Shared with every other
+#: figure's in-plot annotation text so they match on the page.
+HEATMAP_ANNOT_SIZE = ps.ANNOT_FONTSIZE
+
+#: Drop the leading zero from the heatmap's cell values ("-.37" for -0.37).
+#: A correlation cannot exceed 1, so the zero carries no information, and at
+#: this cell size dropping it is the difference between an annotation that
+#: fits inside its cell and one that crowds the gridlines.
+HEATMAP_DROP_LEADING_ZERO = True
 
 #: Draw only the lower triangle of the correlation matrix. It is symmetric,
 #: so the upper half is redundant -- but blanking it leaves panel (a)'s
@@ -127,12 +139,12 @@ MASK_UPPER_TRIANGLE = False
 #: coordinates (0 = axes left edge, negative = outside it). Nudge these to
 #: clear each panel's widest y tick label -- (b)'s count ticks are narrower
 #: than (a)'s score names, but its y axis label sits outside them.
-PANEL_LABEL_X = {"a": -0.26, "b": -0.14}
+PANEL_LABEL_X = {"a": -0.25, "b": -0.20}
 
 #: Panel-label y position, shared, in axes fractions (1 = that axes' top
 #: edge, so >1 sits above it). The two panels are matched to the same height
 #: in `main`, so one shared value puts both labels on the same line.
-PANEL_LABEL_Y = 1.10
+PANEL_LABEL_Y = 1.13
 
 
 def display_name(column: str) -> str:
@@ -228,9 +240,15 @@ def draw_heatmap(ax: plt.Axes, corr: pd.DataFrame) -> None:
     """
     labels = [display_name(c) for c in corr.columns]
     mask = np.triu(np.ones_like(corr, dtype=bool), k=1) if MASK_UPPER_TRIANGLE else None
+    if HEATMAP_DROP_LEADING_ZERO:
+        # seaborn's `fmt` is a format spec, which cannot drop a leading zero,
+        # so hand it pre-rendered strings and an empty spec instead.
+        annot, fmt = corr.map(lambda v: f"{v:.2f}".replace("0.", ".", 1)), ""
+    else:
+        annot, fmt = True, ".2f"
     sns.heatmap(
-        corr, mask=mask, annot=True, fmt=".2f", cmap=CORRELATION_CMAP,
-        vmin=-1, vmax=1, center=0, square=True, linewidths=1.0, linecolor="white",
+        corr, mask=mask, annot=annot, fmt=fmt, cmap=CORRELATION_CMAP,
+        vmin=-1, vmax=1, center=0, square=True, linewidths=0.5, linecolor="white",
         annot_kws={"size": HEATMAP_ANNOT_SIZE}, xticklabels=labels, yticklabels=labels,
         cbar=False, ax=ax,
     )
@@ -259,11 +277,11 @@ def draw_split_distribution(
     blue, orange = ps.CONTRAST_LIGHT
     heights_tv, _, _ = ax.hist(
         train_val, bins=bins, density=density, color=blue, edgecolor="white",
-        linewidth=0.5, alpha=0.65, label="Train/Val", zorder=2,
+        linewidth=0.3, alpha=0.65, label="Train/Val", zorder=2,
     )
     heights_te, _, _ = ax.hist(
         test, bins=bins, density=density, color=orange, edgecolor="white",
-        linewidth=0.5, alpha=0.65, label="Held-out test", zorder=3,
+        linewidth=0.3, alpha=0.65, label="Held-out test", zorder=3,
     )
     ax.set_xlabel(histogram_xlabel(target_col))
     ax.set_ylabel("Density" if density else "Count")
@@ -286,7 +304,7 @@ def panel_label(ax: plt.Axes, text: str, x: float, y: float) -> None:
         y: Position in axes coordinates; see `PANEL_LABEL_Y`.
     """
     ax.text(x, y, text, transform=ax.transAxes, fontweight="bold",
-            fontsize=ps.LABEL_FONTSIZE * 1.5, va="top", ha="left", clip_on=False)
+            fontsize=ps.PANEL_LABEL_FONTSIZE, va="top", ha="left", clip_on=False)
 
 
 def main() -> None:
@@ -312,7 +330,12 @@ def main() -> None:
     fig = plt.figure(
         figsize=(FIG_WIDTH_IN, HEATMAP_SIDE_IN + FIG_VERTICAL_PAD_IN), layout="constrained"
     )
-    gs = fig.add_gridspec(1, 2, width_ratios=PANEL_WIDTH_RATIOS, wspace=PANEL_WSPACE)
+    # width_ratios in inches: (a)'s cell is sized to just hold its square plus
+    # its y labels, and (b) takes everything left over.
+    gs = fig.add_gridspec(
+        1, 2, width_ratios=(PANEL_A_CELL_IN, FIG_WIDTH_IN - PANEL_A_CELL_IN),
+        wspace=PANEL_WSPACE,
+    )
     ax_a = fig.add_subplot(gs[0])
     ax_a.set_box_aspect(1)
     ax_b = fig.add_subplot(gs[1])
@@ -333,14 +356,15 @@ def main() -> None:
     fig.canvas.draw()
     ax_b.set_box_aspect(ax_a.get_window_extent().height / ax_b.get_window_extent().width)
 
-    # Both panels have a fixed aspect, so each is smaller than the cell it was
-    # given and the leftover has to go *somewhere*. Anchor them facing each
-    # other -- (a) to its cell's top-right, (b) to its top-left -- so the
-    # leftover lands on the figure's outer edges, which the tight-bbox save
-    # then crops away. With the default centered anchor it lands *between* the
-    # panels instead, where nothing can crop it, and shrinking PANEL_WSPACE
-    # just hands the freed width back to that same slack: the gap looks
-    # unchanged, it only moves. Both stay "north", so the tops still align.
+    # Both panels have a fixed aspect, so each can be smaller than the cell it
+    # was given and the leftover has to go *somewhere*. Anchor them facing each
+    # other -- (a) to its cell's top-right, (b) to its top-left -- so any
+    # leftover lands on the figure's outer edges rather than *between* the two
+    # panels, where it would read as a gap and where shrinking PANEL_WSPACE
+    # cannot touch it (the freed width just becomes more slack). The page is
+    # saved at exactly `figsize` now, so that edge slack is no longer cropped
+    # away either: keep `PANEL_A_CELL_IN` honest and there is little of it.
+    # Both stay "north", so the tops still align.
     ax_a.set_anchor("NE")
     ax_b.set_anchor("NW")
 

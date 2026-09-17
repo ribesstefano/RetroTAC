@@ -264,49 +264,6 @@ srun -A berzelius-2026-62 -p berzelius --gpus=1 --time=00:30:00 --pty \
     --test-csv data/sets/routes_test.csv
 ```
 
-#### Plotting
-
-```bash
-# Synthesizability scores correlation
-# --method spearman|pearson|kendall] [--columns ...] [
-
-apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
-  python scripts/dataset/correlation_analysis.py \
-    data/retro_scoring/routes_mol_synth_scored.csv \
-    figures/ \
-    --method spearman \
-    --high-corr-threshold 0.7 \
-    --target-col synthesizability \
-    --columns synthesizability struct_n_steps struct_n_BB struct_max_depth struct_lls struct_coupling_fraction struct_avg_branching struct_fragment_balance \
-    --prefix corr_tree_struct
-
-# Correlation matrix only
-apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
-  python scripts/dataset/correlation_analysis.py \
-    data/retro_scoring/routes_mol_synth_scored.csv \
-    figures/ \
-    --method spearman \
-    --high-corr-threshold 0.7 \
-    --target-col synthesizability \
-    --columns synthesizability sa_score sc_score ra_score syba_score gasa_pred fs_score \
-    --prefix corr_mol_scores
-
-# Figure 2a
-apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
-  python scripts/dataset/plot_fig2.py \
-    data/retro_scoring/routes_mol_synth_scored.csv \
-    data/sets/routes_train_val.csv data/sets/routes_test.csv \
-    figures/
-
-# Models comparison: Tukey HSD and scatter plots
-apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
-  python scripts/models/plotting_evaluation.py --results outputs/results/results_20260828_182305
-
-# Plot CV fold distributions
-apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
-    python scripts/models/plotting_folds.py --input data/sets/routes_train_val.csv
-```
-
 #### Ensemble
 
 ```bash
@@ -552,4 +509,59 @@ apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
       --method maxmin \
       --n-mols 20 \
       --output figures/routes_confident_low_preds_maxmin.png
+```
+
+## Plotting
+
+```bash
+# Synthesizability scores correlation
+# --method spearman|pearson|kendall] [--columns ...] [
+
+# Correlation matrix only for structural information
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/dataset/correlation_analysis.py \
+    data/retro_scoring/routes_mol_synth_scored.csv \
+    figures/ \
+    --method spearman \
+    --high-corr-threshold 0.7 \
+    --target-col synthesizability \
+    --columns synthesizability struct_n_steps struct_n_BB struct_max_depth struct_lls struct_coupling_fraction struct_avg_branching struct_fragment_balance \
+    --prefix corr_tree_struct
+
+# Correlation matrix only
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/dataset/correlation_analysis.py \
+    data/retro_scoring/routes_mol_synth_scored.csv \
+    figures/ \
+    --method spearman \
+    --high-corr-threshold 0.7 \
+    --target-col synthesizability \
+    --columns synthesizability sa_score sc_score ra_score syba_score gasa_pred fs_score \
+    --prefix corr_mol_scores
+
+# Figure 2a
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/dataset/plot_fig2.py \
+    data/retro_scoring/routes_mol_synth_scored.csv \
+    data/sets/routes_train_val.csv data/sets/routes_test.csv \
+    figures/
+
+# Figure 2: Correlation matrix and development vs. held-out distributions
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/dataset/plot_fig2.py \
+    data/retro_scoring/routes_mol_synth_scored.csv \
+    data/sets/routes_train_val.csv data/sets/routes_test.csv \
+    figures/
+
+# Figure 3: Models comparison: Tukey HSD and scatter plots
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/models/plotting_evaluation.py --results outputs/results/results_20260828_182305
+
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+    python scripts/negative_data/plot_negative_data.py \
+      --output-dir figures/
+
+# Plot CV fold distributions
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+    python scripts/models/plotting_folds.py --input data/sets/routes_train_val.csv
 ```

@@ -28,6 +28,12 @@ __all__ = [
     "DIVERGING_CMAP_R",
     "RC_PARAMS",
     "TEXT_WIDTH_PT",
+    "TITLE_FONTSIZE",
+    "LABEL_FONTSIZE",
+    "TICK_FONTSIZE",
+    "LEGEND_FONTSIZE",
+    "ANNOT_FONTSIZE",
+    "PANEL_LABEL_FONTSIZE",
     "apply_style",
     "set_size",
     "darken",
@@ -84,14 +90,32 @@ for _cmap in (DIVERGING_CMAP, DIVERGING_CMAP_R):
 # Typography and canvas
 # ---------------------------------------------------------------------------
 
-TITLE_FONTSIZE = 14
-LABEL_FONTSIZE = 12
-TICK_FONTSIZE = 10
-LEGEND_FONTSIZE = 10
+#: Type sizes in points, for a figure *authored at the document's text width
+#: and imported at 100%* (see :func:`set_size`). At that scale these are the
+#: sizes the reader actually sees, so they are picked against the document's
+#: body text -- 10 pt in ICLR: titles and axis labels sit just under it, ticks
+#: and legends a step below, annotation text smaller again. Scaling a figure in
+#: ``\includegraphics`` is what breaks this correspondence, and what makes two
+#: neighbouring figures disagree about how big "a tick label" is.
+TITLE_FONTSIZE = 8
+LABEL_FONTSIZE = 8
+TICK_FONTSIZE = 7
+LEGEND_FONTSIZE = 7
 
-#: LaTeX ``\the\textwidth`` in points. 506.295 is a two-column ACM article;
-#: run ``\the\textwidth`` in your own document and substitute the result.
-TEXT_WIDTH_PT = 506.295
+#: In-plot text that annotates rather than labels: metrics boxes, bar value
+#: labels, heatmap cell values. The smallest size that still prints legibly.
+ANNOT_FONTSIZE = 6
+
+#: Bold ``(a)``/``(b)`` panel letters. The house rule is 1.5x the axis-label
+#: size; at true scale that would out-shout the 10 pt body text, so 1.25x.
+PANEL_LABEL_FONTSIZE = 10
+
+#: LaTeX ``\the\linewidth`` in TeX points (1/72.27 in). 397.48 pt = 5.5 true
+#: inches, the single-column ``\textwidth`` set by ``iclr2026_conference.sty``
+#: (and by NeurIPS). Put ``\the\linewidth`` in your own document, read the
+#: value from the log, and substitute it here: every figure derives its width
+#: from this one number, which is what keeps their type sizes in agreement.
+TEXT_WIDTH_PT = 397.48
 
 DPI = 300
 
@@ -113,13 +137,35 @@ RC_PARAMS: dict[str, Any] = {
     "axes.axisbelow": True,
     "grid.alpha": 0.3,
     "grid.linestyle": "-",
-    "grid.linewidth": 0.5,
-    # Legend: square, hairline, translucent
+    "grid.linewidth": 0.4,
+    # Stroke weights, in points, and therefore on the same true scale as the
+    # type above: a figure imported at 100% shows these widths as printed. The
+    # matplotlib defaults are drawn for a figure that will be shrunk on import
+    # and look coarse once it is not.
+    "axes.linewidth": 0.6,
+    "lines.linewidth": 1.2,
+    "lines.markersize": 4,
+    "patch.linewidth": 0.5,
+    "xtick.major.width": 0.6,
+    "ytick.major.width": 0.6,
+    "xtick.major.size": 2.5,
+    "ytick.major.size": 2.5,
+    "xtick.major.pad": 2,
+    "ytick.major.pad": 2,
+    "axes.labelpad": 2.5,
+    "axes.titlepad": 3,
+    # Legend: square, hairline, translucent -- and with furniture scaled to a
+    # 7 pt entry, or the frame takes up more of the panel than the entries do.
     "legend.frameon": True,
     "legend.fancybox": False,
     "legend.framealpha": 0.5,
     "legend.edgecolor": "#CCCCCC",
     "legend.facecolor": "white",
+    "legend.handlelength": 1.4,
+    "legend.handletextpad": 0.5,
+    "legend.borderpad": 0.35,
+    "legend.borderaxespad": 0.4,
+    "legend.labelspacing": 0.3,
     # Default series order, so bare df.plot() / sns.barplot() land on-palette
     "axes.prop_cycle": cycler(
         color=[
@@ -134,8 +180,15 @@ RC_PARAMS: dict[str, Any] = {
     # Output
     "figure.dpi": 100,
     "savefig.dpi": DPI,
-    "savefig.bbox": "tight",
-    "savefig.pad_inches": 0.1,
+    # NOT "tight": a tight bbox re-crops the page to whatever ink the figure
+    # happens to contain, so the saved width is no longer the width that was
+    # asked for, and ``\includegraphics[width=\linewidth]`` then scales it by
+    # a factor nobody chose -- differently for every figure. Keeping the page
+    # exactly `figsize` is what makes 8 pt in the script mean 8 pt on the page.
+    # The cost is that the layout engine has to fit the decorations itself:
+    # always use `layout="constrained"`, and check nothing is clipped.
+    "savefig.bbox": None,
+    "savefig.pad_inches": 0.0,
     # Embed real TrueType in vector output so journals (and Illustrator) can
     # select and reflow the text instead of receiving outlines.
     "pdf.fonttype": 42,
@@ -224,10 +277,16 @@ def save_figure(
     formats: Iterable[str] = ("pdf", "svg", "png"),
     close: bool = True,
 ) -> list[Path]:
-    """Write a figure once per format, creating the parent directory.
+    r"""Write a figure once per format, creating the parent directory.
 
     Always keep a vector format: ``pdf`` for LaTeX, ``svg`` for the last-mile
     edits reviewers ask for. ``png`` is for previews and slide decks.
+
+    The page comes out at exactly ``fig.get_size_inches()`` -- see
+    ``savefig.bbox`` in :data:`RC_PARAMS` for why that matters. So a figure
+    built with ``figsize=set_size()`` and imported with
+    ``\includegraphics[width=\linewidth]`` is reproduced at 1:1, and the point
+    sizes in :data:`RC_PARAMS` are the point sizes on the page.
 
     Args:
         fig: The figure to write.
