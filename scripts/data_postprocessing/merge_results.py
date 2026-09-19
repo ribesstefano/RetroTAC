@@ -51,19 +51,20 @@ Arguments
                   the same directory as the input files.
 """
 import argparse
-import re
 import json
-import pandas as pd
+import re
 from pathlib import Path
+
+import pandas as pd
 
 
 def merge_csvs(input_dir: Path, output_dir: Path, prefix: str) -> None:
     """Merge per-task CSV files into a single consolidated file.
 
     Args:
-        input_dir  (Path): Directory containing per-task CSV files.
-        output_dir (Path): Directory where merged files will be saved.
-        prefix     (str):  Shared filename prefix inferred from task files.
+        input_dir: Directory containing per-task CSV files.
+        output_dir: Directory where merged files will be saved.
+        prefix: Shared filename prefix inferred from task files.
     """
     for suffix, label in [
         ("_summary.csv",    "summary"),
@@ -77,7 +78,7 @@ def merge_csvs(input_dir: Path, output_dir: Path, prefix: str) -> None:
             continue
 
         print(f"Found {len(files)} files for {label}")
-        merged   = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+        merged = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
         out_path = output_dir / f"{prefix}{suffix}"
         merged.to_csv(out_path, index=False)
         print(f"✓ Saved {label}: {out_path} ({len(merged)} rows)")
@@ -87,9 +88,9 @@ def merge_json(input_dir: Path, output_dir: Path, prefix: str) -> None:
     """Merge per-task JSON/JSONL files into a single JSON array.
 
     Args:
-        input_dir  (Path): Directory containing per-task JSON files.
-        output_dir (Path): Directory where merged file will be saved.
-        prefix     (str):  Shared filename prefix inferred from task files.
+        input_dir: Directory containing per-task JSON files.
+        output_dir: Directory where merged file will be saved.
+        prefix: Shared filename prefix inferred from task files.
     """
     json_files = sorted(input_dir.glob(f"{prefix}_task*.json"))
 
@@ -115,7 +116,12 @@ def merge_json(input_dir: Path, output_dir: Path, prefix: str) -> None:
     print(f"✓ Saved merged JSON: {out_path} ({len(merged_json)} routes)")
 
 
-def main():
+def main() -> None:
+    """Parse CLI arguments and merge all per-task output files for the inferred prefix.
+
+    Raises:
+        SystemExit: If no ``*_task*`` files are found in ``input_dir``.
+    """
     parser = argparse.ArgumentParser(
         description="Merge per-task SLURM output files into consolidated files."
     )
@@ -129,7 +135,7 @@ def main():
     )
     args = parser.parse_args()
 
-    input_dir  = Path(args.input_dir)
+    input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir) if args.output_dir else input_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -140,7 +146,7 @@ def main():
         raise SystemExit(1)
 
     first_stem = all_task_files[0].stem
-    prefix     = re.sub(r"_task\d+.*", "", first_stem)
+    prefix = re.sub(r"_task\d+.*", "", first_stem)
     print(f"Inferred prefix: '{prefix}'")
 
     merge_csvs(input_dir, output_dir, prefix)

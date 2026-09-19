@@ -20,6 +20,7 @@ I/O
 import argparse
 import time
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Set
 
 import pandas as pd
 import requests
@@ -31,18 +32,19 @@ PUBCHEM_BASE = "https://pubchem.ncbi.nlm.nih.gov/rest/pug"
 PUBCHEM_VIEW = "https://pubchem.ncbi.nlm.nih.gov/rest/pug_view"
 
 SMILES_COL = "cap_smiles"
-CID_COL    = "CID"
+CID_COL = "CID"
 
 
 # ── PubChem API ───────────────────────────────────────────────────────────────
 
-def pubchem_smiles_to_cid(smiles: str, sleep_s: float = 0.25, retries: int = 1) -> int | None:
+
+def pubchem_smiles_to_cid(smiles: str, sleep_s: float = 0.25, retries: int = 1) -> Optional[int]:
     """Look up the PubChem CID for a single SMILES string.
 
     Args:
-        smiles:   Query SMILES.
-        sleep_s:  Delay after each attempt (seconds).
-        retries:  Extra retry attempts on transient server errors (429, 5xx).
+        smiles: Query SMILES.
+        sleep_s: Delay after each attempt (seconds).
+        retries: Extra retry attempts on transient server errors (429, 5xx).
 
     Returns:
         The first matching CID, or None if the compound is not in PubChem or
@@ -66,16 +68,25 @@ def pubchem_smiles_to_cid(smiles: str, sleep_s: float = 0.25, retries: int = 1) 
 
 
 def _post_smiles_batch(
-    smiles_batch: list[str],
+    smiles_batch: List[str],
     sleep_s: float,
     retries: int,
-) -> list[int | None] | None:
+) -> Optional[List[Optional[int]]]:
     """POST a batch of SMILES to PubChem and return a CID per entry (same order).
 
     PubChem returns one CID per input SMILES in the same order, using 0 for
     compounds not found. Returns None when the request fails or the response
     length does not match the input — the caller should fall back to individual
     lookups in that case.
+
+    Args:
+        smiles_batch: SMILES strings to submit in one POST request.
+        sleep_s: Delay after each attempt (seconds).
+        retries: Extra retry attempts on transient server errors (429, 5xx).
+
+    Returns:
+        A CID (or None for "not found") per entry in ``smiles_batch``, same
+        order; or None if the request failed or returned a mismatched count.
     """
     url = f"{PUBCHEM_BASE}/compound/smiles/cids/JSON"
     for attempt in range(retries + 1):
@@ -106,6 +117,12 @@ def pubchem_has_vendor(cid: int) -> int:
     Fetches the PUG View "Chemical-Vendors" section and walks the response JSON
     recursively, looking for a "Chemical Vendors" TOC heading whose Information
     entries contain a Boolean True value.
+
+    Args:
+        cid: PubChem Compound ID to check.
+
+    Returns:
+        1 if a vendor is listed, else 0 (including on request/parse failure).
     """
     url = f"{PUBCHEM_VIEW}/data/compound/{cid}/JSON?heading=Chemical-Vendors"
     try:
@@ -119,7 +136,8 @@ def pubchem_has_vendor(cid: int) -> int:
     except Exception:
         return 0
 
-    def _has_vendor(obj) -> bool:
+    def _has_vendor(obj: Any) -> bool:
+        """Recursively search the PUG View JSON tree for a vendor hit."""
         if isinstance(obj, dict):
             if obj.get("TOCHeading") == "Chemical Vendors":
                 return any(
@@ -136,13 +154,14 @@ def pubchem_has_vendor(cid: int) -> int:
 
 # ── Resumable lookup helpers ──────────────────────────────────────────────────
 
+
 def build_cid_map(
-    smiles_list: list[str],
+    smiles_list: List[str],
     cache_path: Path,
     sleep_s: float = 0.35,
     retries: int = 1,
     batch_size: int = 100,
-) -> dict[str, int | None]:
+) -> Dict[str, Optional[int]]:
     """Map SMILES → PubChem CID using batched POST requests, with CSV-based resumability.
 
     Sends up to ``batch_size`` SMILES per POST request (~100× fewer API calls
@@ -153,16 +172,16 @@ def build_cid_map(
 
     Args:
         smiles_list: Unique SMILES to look up (order preserved).
-        cache_path:  CSV with columns [cap_smiles, CID]; created if absent.
-        sleep_s:     Delay between API calls (seconds).
-        retries:     Retry attempts on transient server errors.
-        batch_size:  Number of SMILES per POST request (default 100).
+        cache_path: CSV with columns [cap_smiles, CID]; created if absent.
+        sleep_s: Delay between API calls (seconds).
+        retries: Retry attempts on transient server errors.
+        batch_size: Number of SMILES per POST request (default 100).
 
     Returns:
         Mapping of SMILES → CID (int) or None if not found in PubChem.
     """
-    cache: dict[str, int | None] = {}
-    done:  set[str] = set()
+    cache: Dict[str, Optional[int]] = {}
+    done: Set[str] = set()
 
     if cache_path.exists():
         old = pd.read_csv(cache_path)
@@ -205,24 +224,24 @@ def build_cid_map(
 
 
 def build_vendor_map(
-    cid_list: list[int],
+    cid_list: List[int],
     cache_path: Path,
     sleep_s: float = 0.1,
-) -> dict[int, int]:
+) -> Dict[int, int]:
     """Map CID → vendor status (1/0), reading and writing a CSV cache for resumability.
 
     Skips CIDs already present in ``cache_path`` and flushes each result
     immediately so progress survives interruption.
 
     Args:
-        cid_list:   Unique CIDs to check.
+        cid_list: Unique CIDs to check.
         cache_path: CSV with columns [CID, vendor_status]; created if absent.
-        sleep_s:    Delay between API calls (seconds).
+        sleep_s: Delay between API calls (seconds).
 
     Returns:
         Mapping of CID → 1 (vendor found) or 0 (not found / unavailable).
     """
-    done: dict[int, int] = {}
+    done: Dict[int, int] = {}
 
     if cache_path.exists():
         old = pd.read_csv(cache_path)
@@ -249,21 +268,27 @@ def build_vendor_map(
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Returns:
+        Populated ``argparse.Namespace``.
+    """
     p = argparse.ArgumentParser(description="PubChem CID and vendor check for capped components.")
-    p.add_argument("--input",        type=Path, default=_PROJECT_ROOT / "data/processed/component_capped.csv",
+    p.add_argument("--input", type=Path, default=_PROJECT_ROOT / "data/processed/component_capped.csv",
                    help="Capped component CSV (capping_component output).")
-    p.add_argument("--cid-cache",    type=Path, default=_PROJECT_ROOT / "data/processed/component_smiles_to_cid.csv",
+    p.add_argument("--cid-cache", type=Path, default=_PROJECT_ROOT / "data/processed/component_smiles_to_cid.csv",
                    help="Resumable SMILES→CID cache CSV.")
     p.add_argument("--vendor-cache", type=Path, default=_PROJECT_ROOT / "data/processed/component_cid_to_vendor.csv",
                    help="Resumable CID→vendor cache CSV.")
-    p.add_argument("--output",       type=Path, default=_PROJECT_ROOT / "data/processed/component_check_cid_vendor.csv",
+    p.add_argument("--output", type=Path, default=_PROJECT_ROOT / "data/processed/component_check_cid_vendor.csv",
                    help="Final output CSV.")
-    p.add_argument("--sleep",        type=float, default=0.35,
+    p.add_argument("--sleep", type=float, default=0.35,
                    help="Delay between PubChem API calls (seconds). Vendor calls use 30%% of this.")
-    p.add_argument("--retries",      type=int,   default=1,
+    p.add_argument("--retries", type=int, default=1,
                    help="Retry attempts on transient server errors.")
-    p.add_argument("--batch-size",   type=int,   default=100,
+    p.add_argument("--batch-size", type=int, default=100,
                    help="SMILES per batched POST request to PubChem (default 100).")
     return p.parse_args()
 
@@ -277,6 +302,17 @@ def main(
     retries: int = 1,
     batch_size: int = 100,
 ) -> None:
+    """Look up PubChem CIDs and vendor status for every capped-component SMILES.
+
+    Args:
+        input_path: Capped component CSV (capping_component output).
+        cid_cache: Resumable SMILES→CID cache CSV.
+        vendor_cache: Resumable CID→vendor cache CSV.
+        output_path: Final output CSV path.
+        sleep_s: Delay between PubChem API calls (seconds).
+        retries: Retry attempts on transient server errors.
+        batch_size: SMILES per batched POST request to PubChem.
+    """
     df = pd.read_csv(input_path)
 
     if "error" in df.columns:

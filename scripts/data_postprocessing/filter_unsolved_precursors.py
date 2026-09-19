@@ -53,21 +53,22 @@ Examples
 """
 
 import argparse
-import json
 import csv
+import json
 from pathlib import Path
+from typing import Any, Dict, List
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def load_routes(json_path):
+def load_routes(json_path: str) -> List[Dict[str, Any]]:
     """Load synthesis routes from a JSON or NDJSON file.
 
     Args:
-        json_path (str): Path to the JSON or NDJSON file.
+        json_path: Path to the JSON or NDJSON file.
 
     Returns:
-        list[dict]: A list of route dictionaries.
+        List of route dictionaries.
 
     Raises:
         json.JSONDecodeError: If the file cannot be parsed as either format.
@@ -81,7 +82,7 @@ def load_routes(json_path):
         return [json.loads(line) for line in content.splitlines() if line.strip()]
 
 
-def filter_unsolved(json_path, output_dir: Path):
+def filter_unsolved(json_path: str, output_dir: Path) -> None:
     """Extract unique out-of-stock precursors from unsolved routes.
 
     A route is unsolved if at least one precursor has ``in_stock`` set to
@@ -89,10 +90,8 @@ def filter_unsolved(json_path, output_dir: Path):
     and saved as a CSV of unique precursor SMILES.
 
     Args:
-        json_path (str): Path to the input JSON file containing synthesis routes.
-
-    Returns:
-        None. Output is written to stdout and a CSV file.
+        json_path: Path to the input JSON file containing synthesis routes.
+        output_dir: Directory the output CSV is written to.
     """
     routes = load_routes(json_path)
 
@@ -106,7 +105,7 @@ def filter_unsolved(json_path, output_dir: Path):
 
         out_of_stock = [p for p in precursors if not p["in_stock"]]
         results.append({
-            "molecule":              route["target_smiles"],
+            "molecule": route["target_smiles"],
             "out_of_stock_precursors": [p["precursor_smiles"] for p in out_of_stock],
         })
 
@@ -121,7 +120,7 @@ def filter_unsolved(json_path, output_dir: Path):
 
     # ── CSV export ────────────────────────────────────────────────────────────
     output_dir.mkdir(parents=True, exist_ok=True)
-    filename   = Path(json_path).stem + "_unsolved_precursors.csv"
+    filename = Path(json_path).stem + "_unsolved_precursors.csv"
     output_csv = output_dir / filename
 
     seen = set()
@@ -137,7 +136,8 @@ def filter_unsolved(json_path, output_dir: Path):
     print(f"CSV saved to: {output_csv} ({len(seen)} unique precursors)")
 
 
-def main():
+def main() -> None:
+    """Parse CLI arguments and run ``filter_unsolved`` on the given JSON file."""
     parser = argparse.ArgumentParser(description="Extract unique out-of-stock precursors from unsolved routes.")
     parser.add_argument("input", type=str, help="Path to input JSON file.")
     parser.add_argument("--output-dir", type=Path, default=_PROJECT_ROOT / "data/processed",

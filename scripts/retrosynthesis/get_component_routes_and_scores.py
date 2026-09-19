@@ -41,7 +41,7 @@ import pandas as pd
 # route_scores/ isn't pip-installed by the main uv-managed env (its heavy-dep
 # sibling mol_scores/ needs a separate scoring_env — see retro_scores/README.md),
 # so reach it directly via sys.path. Also needs the repo root itself on
-# sys.path for its own src.protac_synth.stock_utils reach-across.
+# sys.path for its own src.retrotac.stock_utils reach-across.
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(_REPO_ROOT))
 sys.path.append(str(_REPO_ROOT / "retro_scores"))
@@ -161,7 +161,7 @@ def main() -> None:
     # Four output streams: full JSONL checkpoint, summary row per molecule,
     # one row per precursor, and one row per synthesis step.
     out_jsonl = args.outdir / f"{prefix}_results.jsonl"
-    out_sum   = args.outdir / f"{prefix}_results_summary.csv"
+    out_sum = args.outdir / f"{prefix}_results_summary.csv"
     out_precs = args.outdir / f"{prefix}_results_precursors.csv"
     out_steps = args.outdir / f"{prefix}_results_steps.csv"
 

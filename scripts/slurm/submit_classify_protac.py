@@ -7,9 +7,9 @@ Build and submit a PROTAC/non-PROTAC LLM classification SLURM job
 
 Single job, not an array: classify_protac.py already parallelizes LLM calls
 internally via a thread pool (--threads), so one job with enough threads
-covers the whole CSV. `llm_scoring`'s dependencies (dspy, litellm, ...) are an
-optional extra, not installed by plain `uv sync`, so the job runs via
-`uv run --extra llm_scoring` rather than an already-activated .venv.
+covers the whole CSV. LLM scoring's dependencies (dspy, litellm, ...) live in
+the `scoring` optional extra, not installed by plain `uv sync`, so the job
+runs via `uv run --extra scoring` rather than an already-activated .venv.
 
 Usage
 -----
@@ -141,14 +141,14 @@ def main() -> None:
 
 module load Mambaforge/23.3.1-1-hpc1-bdist
 eval "$(conda shell.bash hook)"
-mamba activate env-protac-synth
+mamba activate env-retrotac
 
 cd {_PROJECT_ROOT}
 
 echo "Job started : $(date)"
 echo "Node        : $SLURMD_NODENAME"
 
-uv run --extra llm_scoring {CLASSIFIER} \\
+uv run --extra scoring {CLASSIFIER} \\
     {in_csv} \\
     {out_csv} \\
     {_classifier_args(args)}

@@ -18,7 +18,7 @@ I/O
 import argparse
 from collections import deque
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -30,7 +30,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # ── SMARTS → environment label ────────────────────────────────────────────────
 
-SMARTS_TO_ENVIRONMENT: dict[str, str] = {
+SMARTS_TO_ENVIRONMENT: Dict[str, str] = {
     "[#6]-[#7](-[#6])-[#0:1]": "Aliphatic N",
     "[#6]-[#7](-[#6])-[#0:2]": "Aliphatic N",
     "[H]-[#7](-[#6])-[#0:1]":  "Aliphatic N",
@@ -58,7 +58,7 @@ FALLBACK_ENVIRONMENT = "others"
 
 # linker has two attachment points — one toward the warhead ([*:1]) and one
 # toward the E3 ligase ([*:2]).
-COMPONENT_MAP: dict[str, list[tuple[str, int]]] = {
+COMPONENT_MAP: Dict[str, List[Tuple[str, int]]] = {
     "warhead": [("warhead",    1)],
     "e3":      [("e3",         2)],
     "linker":  [("linker_cap1", 1), ("linker_cap2", 2)],
@@ -67,8 +67,15 @@ COMPONENT_MAP: dict[str, list[tuple[str, int]]] = {
 
 # ── Chemistry helpers ─────────────────────────────────────────────────────────
 
-def safe_mol(smiles: str) -> tuple[Optional[Chem.Mol], str]:
-    """Parse SMILES, returning (mol, "") on success or (None, reason) on failure."""
+def safe_mol(smiles: str) -> Tuple[Optional[Chem.Mol], str]:
+    """Parse SMILES, returning (mol, "") on success or (None, reason) on failure.
+
+    Args:
+        smiles: SMILES string to parse.
+
+    Returns:
+        Tuple of (RDKit Mol or None, error reason string; empty on success).
+    """
     if pd.isna(smiles) or not str(smiles).strip():
         return None, "empty smiles"
     mol = Chem.MolFromSmiles(smiles)
@@ -196,7 +203,14 @@ def build_attachment_analysis(
 
 
 def classify_environments(df: pd.DataFrame) -> pd.DataFrame:
-    """Add an ``environment`` column by looking up each SMARTS in SMARTS_TO_ENVIRONMENT."""
+    """Add an ``environment`` column by looking up each SMARTS in SMARTS_TO_ENVIRONMENT.
+
+    Args:
+        df: DataFrame with an ``attachment_smarts`` column.
+
+    Returns:
+        Copy of `df` with an added ``environment`` column.
+    """
     df = df.copy()
     df["environment"] = df["attachment_smarts"].map(
         lambda s: SMARTS_TO_ENVIRONMENT.get(s, FALLBACK_ENVIRONMENT)
@@ -250,7 +264,7 @@ def plot_env_summary(df: pd.DataFrame, output_path: Path) -> None:
     ax.set_ylim(0, FIG_H)
     ax.axis("off")
 
-    def row_y(i):
+    def row_y(i: int) -> float:
         return FIG_H - HDR_H - i * ROW_H
 
     # Header
@@ -297,6 +311,14 @@ def build_component_table(df: pd.DataFrame) -> pd.DataFrame:
 
     Output columns: components, component_smiles_with_dummy, component_id,
     component_hash_id, protac_ids.
+
+    Args:
+        df: Master PROTAC table with `warhead_smiles`/`linker_smiles`/
+            `e3_ligase_ligand_smiles`, their `*_id`/`*_hash_id` columns, and
+            `protac_id`.
+
+    Returns:
+        Long-format DataFrame, one row per unique component.
     """
     col_map = {
         "warhead_smiles":          ("warhead", "warhead_id",          "warhead_hash_id"),
@@ -324,6 +346,11 @@ def build_component_table(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the attachment-environment analysis CLI.
+
+    Returns:
+        Parsed arguments namespace.
+    """
     p = argparse.ArgumentParser(description="Attachment-point environment analysis.")
     p.add_argument("--input",  type=Path, default=_PROJECT_ROOT / "data/processed/protac_smiles_master_std.csv",
                    help="Master PROTAC table (build_protac_master_table output).")
@@ -337,6 +364,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def main(input_path: Path, output_path: Path, plot_path: Path, n_hops: int) -> None:
+    """Run the full attachment-environment analysis and write CSV + figure outputs.
+
+    Args:
+        input_path: Master PROTAC table CSV (build_protac_master_table output).
+        output_path: Destination for the classified attachment environments CSV.
+        plot_path: Destination for the summary figure PNG.
+        n_hops: Bond-distance radius around each attachment dummy atom.
+    """
     print("Loading PROTAC master file...")
     df_raw = pd.read_csv(input_path)
 

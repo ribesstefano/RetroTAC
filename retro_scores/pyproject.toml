@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "protac-retro-scores"
 version = "0.1.0"
-description = "Retrosynthesis-based scoring for PROTAC molecules: mol_scores (SA/SC/RA/SYBA/GASA/FS, per-molecule) and route_scores (AiZynthFinder-route-based, e.g. HAC-weighted score). Installed separately from the main protac-synthesizability package. See README.md in this directory."
+description = "Retrosynthesis-based scoring for PROTAC molecules: mol_scores (SA/SC/RA/SYBA/GASA/FS, per-molecule) and route_scores (route_tree_score.py's composite length+balance score, hac_score.py's HAC-weighted stock-availability score -- both pure rdkit, no aizynthfinder needed). aizynthfinder_utils.py's live-search helpers are the exception and need aizynthfinder installed manually -- dropped project-wide, see pyproject.toml at repo root. Installed separately from the main retrotac package. See README.md in this directory."
 requires-python = ">=3.10"
 dependencies = []
 

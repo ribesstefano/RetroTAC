@@ -2,13 +2,13 @@
 
 This document describes how to rebuild the environment for the synthesizability
 scoring pipeline (`retro_scores/`, a standalone package installed separately
-from the main `src/protac_synth/` codebase — see "Why separate?" below). The
+from the main `src/retrotac/` codebase — see "Why separate?" below). The
 pipeline computes six scores per molecule — SA score, SCScore, RAscore, SYBA,
 GASA, and FSscore — each with a raw and a scaled value.
 
 ### Why separate?
 
-`src/protac_synth/` (installed via `uv sync`, Python 3.12) trains and runs
+`src/retrotac/` (installed via `uv sync`, Python 3.12) trains and runs
 inference for the surrogate model. This scoring pipeline needs a completely
 different, fragile stack (TF 2.8 + torch 2.0 + dgl 2.1 + old xgboost, Python
 3.10) that has nothing to do with that. Keeping it in its own package with
@@ -71,6 +71,12 @@ pip install "setuptools<81"
 # torchdata: dgl 2.1's graphbolt imports torchdata.datapipes, removed in newer
 # torchdata. 0.6.0 keeps it. If a scorer pulls a newer one, re-pin this.
 pip install "torchdata==0.6.0"
+
+# fsscore.models.ranknet imports this directly; fsscore's own pyproject.toml
+# pins this exact version too. Easy to miss since fsscore itself installs
+# with --no-deps below and *appears* to succeed -- the gap only shows up the
+# first time something actually calls fs_score.compute().
+pip install torch-geometric==2.3.0
 ```
 
 ### git-based scorers (install with `--no-deps`)
@@ -84,19 +90,59 @@ pip install --no-deps --no-build-isolation git+https://github.com/reymond-group/
 pip install --no-deps --no-build-isolation git+https://github.com/schwallergroup/fsscore.git
 ```
 
+**syba's model files are Git-LFS-tracked** (`resources/syba.csv.gz`,
+`resources/syba4.csv.gz`, ~115 MB). `pip install git+...` (the syba line
+above) checks out the ~130-byte LFS pointer stub instead of the real file,
+even with `git-lfs` installed and registered first -- confirmed that
+`git lfs install --skip-repo` beforehand does NOT make pip's own internal
+git clone smudge correctly, only an actual `git clone` command does.
+`SybaClassifier().fitDefaultScore()` then fails with a gzip error (`Not a
+gzipped file (b've')`, i.e. it read the pointer text's `"version ..."` line
+instead of gzip magic bytes). Install `git-lfs`, register the filter
+globally, then clone syba yourself and install from that local copy instead
+of the remote URL (replaces the plain `pip install git+...` line above for
+syba specifically):
+```bash
+sudo apt-get install git-lfs   # or your package manager's equivalent
+git lfs install --skip-repo
+
+SYBA_TMP=$(mktemp -d)
+git clone https://github.com/lich-uct/syba.git "$SYBA_TMP"
+pip install --no-deps --no-build-isolation "$SYBA_TMP"
+rm -rf "$SYBA_TMP"
+```
+Verify after installing: `python -c "import syba, os; print(os.path.getsize(os.path.join(os.path.dirname(syba.__file__), 'resources', 'syba4.csv.gz')))"`
+should print ~115000000-ish, not ~134.
+
+**fsscore's own `pyproject.toml` under-declares its packages** (`packages =
+["fsscore"]` under a `src/` layout, missing the `models`/`data`/`utils`
+subpackages it actually ships), so `pip install --no-deps` above only
+installs `fsscore/__init__.py` -- `from fsscore.models.ranknet import
+LitRankNet` then fails with `ModuleNotFoundError: No module named
+'fsscore.models'`. Fill in the missing subpackages from a full clone (see
+"FSscore checkpoint" below, which folds this into one step since both need
+the same clone).
+
 ## 3. Fetch models / repos that are NOT pip-installed
 
 ### RAscore model (manual copy)
 
 `--no-deps` skips RAscore's bundled model. Clone the repo and copy the XGB model
 into the installed package (`SP` below resolves to wherever `scoring_env`
-actually put it, so this works regardless of machine or Python version):
+actually put it, so this works regardless of machine or Python version).
+Clone into a private `mktemp -d` directory, not a fixed path like
+`/tmp/RAscore` -- on a shared HPC login node, `/tmp` is shared across users,
+and a predictable name there can collide with another user who followed
+these same instructions (hit this for real on Berzelius: another user's own
+leftover `/tmp/RAscore` broke a from-scratch build using this exact path):
 
 ```bash
-git clone https://github.com/reymond-group/RAscore.git /tmp/RAscore
+RASCORE_TMP=$(mktemp -d)
+git clone https://github.com/reymond-group/RAscore.git "$RASCORE_TMP"
 SP=$(python -c "import os, RAscore; print(os.path.dirname(RAscore.__file__))")
 mkdir -p $SP/models
-cp -r /tmp/RAscore/RAscore/models/* $SP/models/
+cp -r "$RASCORE_TMP/RAscore/models/"* $SP/models/
+rm -rf "$RASCORE_TMP"
 # verify model.pkl is a real ~9.7 MB file, not an LFS stub:
 ls -la $SP/models/XGB_chembl_ecfp_counts/model.pkl
 ```
@@ -115,15 +161,40 @@ git clone https://github.com/CatSci/SCScore.git   # CatSci fork ships the .json.
 git clone https://github.com/cadd-synthetic/GASA.git   # ships gasa.pth in GASA/model/
 ```
 
+**Upstream bug in `cadd-synthetic/GASA`:** `model/data.py`'s `mkdir_p()`
+catches `OSError` and checks `exc.errno == errno.EEXIST` without ever
+`import errno` -- raises `NameError: name 'errno' is not defined` instead
+of the intended "directory already exists, continue" handling, and it hits
+this on every run (the target directory always already exists). One-line
+patch after cloning:
+```bash
+sed -i '1i import errno' external/GASA/model/data.py
+```
+
 Paths are resolved in `retro_scores/mol_scores/__init__.py` relative to the
 project root — no edits needed if the layout matches.
 
-### FSscore checkpoint (figshare)
+### FSscore: missing subpackages + checkpoint (one clone fixes both)
 
-The pretrained checkpoint is on figshare (not in the pip package, not gdown-able):
-https://figshare.com/s/2db88a98f73e22af6868
+Despite the `figshare` link this section used to point at, the pretrained
+checkpoint is checked directly into the `schwallergroup/fsscore` repo
+(`models/*.ckpt`, ~1.4 MB, a real file, not a Git-LFS pointer) -- no
+figshare account or manual download needed. The same clone also fixes the
+missing-subpackages issue noted above (`pip install --no-deps` only gets
+`fsscore/__init__.py`). Use a private `mktemp -d`, not a fixed path, for the
+same shared-`/tmp` reason as RAscore above:
 
-Download the `models` folder and place the checkpoint at:
+```bash
+FSSCORE_TMP=$(mktemp -d)
+git clone https://github.com/schwallergroup/fsscore.git "$FSSCORE_TMP"
+FSP=$(python -c "import os, fsscore; print(os.path.dirname(fsscore.__file__))")
+cp -r "$FSSCORE_TMP/src/fsscore/." "$FSP/"          # fills in models/, data/, utils/
+mkdir -p external/fsscore/models
+cp "$FSSCORE_TMP/models/pretrain_graph_GGLGGL_ep242_best_valloss.ckpt" external/fsscore/models/
+rm -rf "$FSSCORE_TMP"
+```
+
+The checkpoint must still end up at:
 
 ```
 external/fsscore/models/pretrain_graph_GGLGGL_ep242_best_valloss.ckpt
@@ -134,12 +205,12 @@ external/fsscore/models/pretrain_graph_GGLGGL_ep242_best_valloss.ckpt
 ## 4. Install this package (editable)
 
 `retro_scores/` is a standalone project with its own `pyproject.toml` — it
-does not depend on `protac_synth` or the main repo's `pyproject.toml` at all,
+does not depend on `retrotac` or the main repo's `pyproject.toml` at all,
 so installing it never touches the main Python-3.12 environment. It provides
 two importable packages: `mol_scores` (the six scorers above, what this doc
 is about) and `route_scores` (AiZynthFinder-route-based scoring, e.g. the
 HAC-weighted score — needs `aizynthfinder`, so it's meant for the main
-`protac_synth` environment rather than `scoring_env`; see its own module
+`retrotac` environment rather than `scoring_env`; see its own module
 docstring).
 
 ```bash
@@ -161,7 +232,7 @@ column named `molecule` by default (override with `--smiles-col`); output gets
 the raw + scaled score columns appended.
 
 ```bash
-python scripts/retrosynthesis/synthesizability_scores.py \
+python retro_scores/synthesizability_scores.py \
     data/raw/<input>.csv \
     data/synth_scores/<output>.csv \
     --smiles-col molecule
@@ -197,3 +268,39 @@ what's actually installed — this table is the curated subset that matters;
 avoid committing a full `pip freeze` dump (a past one leaked a GitHub token
 via an editable self-install — see `git log` for `requirements_scoring.txt`
 if you need the history).
+
+---
+
+## Notes on Graph-Based Scores
+
+Several metrics quantify how "branchy" a tree is depending on whether you care about leaf density, branching symmetry, or hierarchical nesting:
+
+**Basic Structural Metrics**
+
+* **Leaf-to-Node Ratio ($L / N$):** Measures pure tip density. A linear path graph has a minimum ratio of $\frac{2}{N}$, while a star graph (one hub connected to all nodes) has a maximum ratio of $\frac{N-1}{N}$.
+* **Diameter vs. Size ($D / N$):** The longest shortest path between any two leaves. A low diameter relative to node count indicates a bushy, dense, or star-like tree, while $D \approx N$ indicates a linear, unbranched chain.
+* **Wiener Index ($W(T)$):** The sum of all pairwise shortest path distances:
+
+$$W(T) = \sum_{u < v} d(u, v)$$
+
+$W(T)$ reaches its maximum on a linear path (least branchy) and its minimum on a star graph (maximally branchy).
+
+**Phylogenetic & Balance Indices (Rooted Trees)**
+
+* **Colless Index ($I_C$):** Measures the symmetry of bifurcations across all internal nodes $v$:
+
+$$I_C = \sum_{v \in V_{int}} \vert{}T_{L}(v) - T_{R}(v)\vert{}$$
+
+where $T_L$ and $T_R$ are the sizes of the left and right subtrees. Completely balanced trees score $0$; linear combs score maximal asymmetry.
+* **Sackin Index ($I_S$):** The sum of the depths of all leaves from the root:
+
+$$I_S = \sum_{l \in \text{Leaves}} \text{depth}(l)$$
+
+Minimizes on balanced, bushy trees ($O(N \log N)$) and maximizes on line-like caterpillar trees ($O(N^2)$).
+
+**Hierarchical & Flow Metrics**
+
+* **Horton–Strahler Number:** Used extensively in hydrology, botany, and neuroscience to measure branching complexity. Leaves start at order $1$. When two branches of order $i$ meet, the parent becomes order $i + 1$; if orders differ, the parent inherits the higher order. A high Strahler number indicates deep, recursive multi-scale branching.
+* **Ramification Index / Bifurcation Ratio ($R_B$):** The ratio of branches of order $i$ to branches of order $i + 1$:
+
+$$R_B = \frac{N_i}{N_{i+1}}$$

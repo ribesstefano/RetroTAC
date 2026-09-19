@@ -3,18 +3,40 @@ features:
   use_fingerprints: true
   use_descriptors: true
   tune_fp_radius: false
-  fp_radius: 3
-  fp_size: 512
+  fp_radius: 8
+  fp_size: 1024
 
-target: llm_score # hac_weighted_score   # your TARGET column name
-molecule_col: SMILES # molecule       # SMILES column name
+target: synthesizability
+molecule_col: smiles
 
 cross_validation:
   seeds: [42, 123, 456, 789, 1011]
   n_folds: 5
 
+hpo:
+  # Inner-loop Optuna objective (MINIMISED):
+  #   objective = objective_alpha * RMSE + (1 - objective_alpha) * (1 - spearman_rho) / 2
+  # 1.0 = pure RMSE, 0.0 = pure ranking. Note the weights are nominal, not
+  # effective: on a [0, 1] target RMSE usually sits around 0.05-0.25 while the
+  # rank penalty spans the full [0, 1], so 0.5 still lets ranking dominate --
+  # raise it towards ~0.8 if calibration matters more than ordering.
+  objective_alpha: 0.5
+  # Weight, inside the (1 - objective_alpha) budget, on an uncertainty-
+  # calibration penalty vs the rank penalty:
+  #   ... + (1 - objective_alpha) * ((1-objective_beta)*rank_penalty + objective_beta*uncertainty_penalty)
+  # Only has any effect for a model that predicts its own uncertainty
+  # (currently: the GNN's evidential head, gnn.head: evidential) -- for every
+  # other model/head this value is read but never used, since there is no
+  # uncertainty to weight. 0.1 here is just a mild nudge for when that head
+  # does get tuned; raise it towards 1.0 to prioritize calibration over
+  # ranking, or to 0.0 for pure ranking (unweighted uncertainty).
+  objective_beta: 0.1
+  # Cut applied to target AND predictions for the binary metrics reported per
+  # fold (ROC-AUC / PR-AUC rank on the raw predictions, not the thresholded ones).
+  classification_threshold: 0.7
+
 tracking:
-  wandb_project: protac-synth
+  wandb_project: retrotac
   study_prefix: v1
 
 torch:                   # for the MLP/GNN later

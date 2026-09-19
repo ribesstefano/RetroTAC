@@ -34,7 +34,7 @@ from typing import List, Tuple
 import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCORER    = REPO_ROOT / "scripts" / "retrosynthesis" / "get_component_routes_and_scores.py"
+SCORER = REPO_ROOT / "scripts" / "retrosynthesis" / "get_component_routes_and_scores.py"
 
 
 def _enumerate_tasks(
@@ -69,7 +69,7 @@ def _enumerate_tasks(
 
     df["component"] = df["component_id"].str.split("_").str[0]
     df["component"] = df["component"].replace({"E3": "e3", "LK": "linker", "WH": "warhead"})
-    df["cap_type"]  = df["cap_type"].astype(str).str.strip()
+    df["cap_type"] = df["cap_type"].astype(str).str.strip()
 
     tasks: List[Tuple[str, str, int, int]] = []
     for (component_type, cap), group in df.groupby(["component", "cap_type"]):
@@ -96,35 +96,35 @@ def parse_args() -> argparse.Namespace:
     )
 
     slurm = ap.add_argument_group("SLURM")
-    slurm.add_argument("--account",   required=True,
+    slurm.add_argument("--account", required=True,
                        help="SLURM account (e.g. berzelius-2026-62).")
     slurm.add_argument("--partition", default="berzelius-cpu",
                        help="SLURM partition.")
-    slurm.add_argument("--time",      default="08:00:00",
+    slurm.add_argument("--time", default="08:00:00",
                        help="Wall-clock time limit per task.")
-    slurm.add_argument("--cpus",      type=int, default=16,
+    slurm.add_argument("--cpus", type=int, default=16,
                        help="CPUs per task (--cpus-per-task). CPU nodes have 128 cores (2×AMD EPYC 9534); "
                             "16 fits 8 concurrent tasks per node and saturates TF intra-op parallelism.")
-    slurm.add_argument("--mem",       default="32G",
+    slurm.add_argument("--mem", default="32G",
                        help="Memory per task.")
-    slurm.add_argument("--job-name",  default="comp_scores",
+    slurm.add_argument("--job-name", default="comp_scores",
                        help="SLURM job name.")
-    slurm.add_argument("--log-dir",   type=Path, default=REPO_ROOT / "logs" / "component_scores",
+    slurm.add_argument("--log-dir", type=Path, default=REPO_ROOT / "logs" / "component_scores",
                        help="Directory for SLURM stdout/stderr logs and the task list/script.")
-    slurm.add_argument("--mail",      default=None,
+    slurm.add_argument("--mail", default=None,
                        help="Email address for END/FAIL notifications.")
 
     scorer = ap.add_argument_group("scorer (forwarded to get_component_routes_and_scores.py)")
-    scorer.add_argument("--csv",      required=True, type=Path, help="Capped components CSV.")
-    scorer.add_argument("--config",   required=True, type=Path, help="AiZynthFinder config YAML.")
+    scorer.add_argument("--csv", required=True, type=Path, help="Capped components CSV.")
+    scorer.add_argument("--config", required=True, type=Path, help="AiZynthFinder config YAML.")
     scorer.add_argument("--stock_db", required=True, type=Path, help="SQLite stock database.")
-    scorer.add_argument("--outdir",   required=True, type=Path,
+    scorer.add_argument("--outdir", required=True, type=Path,
                         help="Output directory for score CSVs.")
     scorer.add_argument("--chunk_size", type=int, default=0,
                         help="Split slices with more unique SMILES than this into chunks (0 = no split).")
     scorer.add_argument("--smiles_col", default="cap_smiles",
                         help="SMILES column in the capped CSV.")
-    scorer.add_argument("--error_col",  default="error",
+    scorer.add_argument("--error_col", default="error",
                         help="Error column in the capped CSV.")
 
     ap.add_argument("--dry-run", action="store_true",
@@ -137,11 +137,11 @@ def main() -> None:
     args = parse_args()
 
     # Resolve user-supplied paths to absolute so the sbatch script is location-independent.
-    csv      = args.csv.resolve()
-    config   = args.config.resolve()
+    csv = args.csv.resolve()
+    config = args.config.resolve()
     stock_db = args.stock_db.resolve()
-    outdir   = args.outdir.resolve()
-    log_dir  = args.log_dir.resolve()
+    outdir = args.outdir.resolve()
+    log_dir = args.log_dir.resolve()
 
     for p, label in [(csv, "--csv"), (config, "--config"), (stock_db, "--stock_db")]:
         if not p.exists():
@@ -205,7 +205,7 @@ def main() -> None:
 {mail_line}
 module load Mambaforge/23.3.1-1-hpc1-bdist
 eval "$(conda shell.bash hook)"
-mamba activate env-protac-synth
+mamba activate env-retrotac
 
 cd {REPO_ROOT}
 source .venv/bin/activate

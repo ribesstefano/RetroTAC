@@ -1,0 +1,85 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+# `training` extra + `notebooks` (jupyter/jupyterlab/ipywidgets, for
+# interactive development -- see the `notebook` app below and
+# apptainer/README.md, "Developing against a container"). 5x5 nested
+# scaffold CV training for xgb/mlp/gnn, plus PROTAC-Splitter for data prep.
+# GPU work (the actual .fit() calls) needs a SLURM GPU allocation and --nv
+# (CUDA runtime libs come from the PyPI wheels themselves; --nv only exposes
+# the host driver).
+
+%files
+    pyproject.toml /opt/repo/pyproject.toml
+    uv.lock /opt/repo/uv.lock
+    retrotac /opt/repo/retrotac
+    scripts /opt/repo/scripts
+    config /opt/repo/config
+    slurm /opt/repo/slurm
+
+%post
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl git build-essential libxrender1 libxext6 libsm6
+    rm -rf /var/lib/apt/lists/*
+
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/opt/uv-bin sh
+    export PATH="/opt/uv-bin:${PATH}"
+    uv python install 3.12
+
+    export UV_CACHE_DIR=/opt/uv-cache
+    export UV_PROJECT_ENVIRONMENT=/opt/venv
+    cd /opt/repo
+    uv sync --frozen --extra training --extra notebooks
+    rm -rf /opt/uv-cache
+
+%environment
+    export VIRTUAL_ENV=/opt/venv
+    export PATH=/opt/uv-bin:/opt/venv/bin:${PATH}
+    export UV_PROJECT_ENVIRONMENT=/opt/venv
+
+%runscript
+    cd /opt/repo
+    exec python "$@"
+
+%apprun train
+    cd /opt/repo
+    exec python scripts/models/train.py "$@"
+
+%apprun notebook
+    cd /opt/repo
+    exec jupyter lab --no-browser --ip=0.0.0.0 --port="${JUPYTER_PORT:-8888}" \
+        --notebook-dir=/opt/repo "$@"
+
+%labels
+    profile training
+    pyproject_extra training notebooks
+
+%help
+    Training container: 5x5 nested scaffold CV for xgb/mlp/gnn + PROTAC-Splitter.
+
+    Build (from the repo root):
+        apptainer build --fakeroot apptainer/training.sif apptainer/training.def
+
+    Run one outer fold on a SLURM GPU job (--nv exposes the host's NVIDIA
+    driver to the CUDA-enabled torch/xgboost wheels already baked into the
+    image; see apptainer/bind_live_repo.sh for the live-code bind-mounts):
+        srun -A berzelius-2026-62 -p berzelius --gpus=1 --cpus-per-task=16 \
+            apptainer run --nv $(bash apptainer/bind_live_repo.sh) \
+            apptainer/training.sif scripts/models/train.py \
+            --model xgb --input data.csv --seed 42 --fold 0 --prefix v1 --device cuda
+
+    --precompute (feature caching) and Optuna study creation are CPU-only and
+    fine without --nv/--gpus, same as on the login node without a container.
+
+    GNN needs the Chemeleon pretrained weights on the host (see
+    config/models_config.yaml's gnn.chemeleon_weights) -- not baked into the
+    image; bind-mount wherever it lives if outside the repo tree.
+
+    Interactive development / notebooks (see apptainer/README.md,
+    "Developing against a container" for the full SSH-tunnel walkthrough):
+        apptainer exec $(bash apptainer/bind_live_repo.sh) \
+            apptainer/training.sif jupyter lab --no-browser --ip=0.0.0.0 --port=8888
+    or the shortcut: apptainer run --app notebook ... apptainer/training.sif

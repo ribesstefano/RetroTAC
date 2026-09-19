@@ -1,0 +1,27 @@
+# config.yaml
+features:
+  use_fingerprints: true
+  use_descriptors: true
+  tune_fp_radius: false
+  fp_radius: 8
+  fp_size: 1024
+
+target: synthesizability   # continuous 0-1, no NaN in routes_train_val.csv
+molecule_col: smiles       # routes_train_val.csv header is lowercase
+
+cross_validation:
+  seeds: [42, 123, 456, 789, 1011]
+  n_folds: 5
+
+tracking:
+  wandb_project: retrotac
+  study_prefix: routes
+
+torch:                   # for the MLP/GNN later
+  device: auto           # auto | cpu | cuda | mps
+  max_epochs: 500
+  patience: 20
+  batch_size: 256         # fixed (not Optuna-tuned) for MLP/GNN
+
+gnn:
+  chemeleon_weights: /home/x_steri/storage/PROTAC-Synthesizability/chemeleon/chemeleon_mp.pt

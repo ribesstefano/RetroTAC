@@ -20,48 +20,53 @@ import sys
 from pathlib import Path
 from textwrap import dedent
 
-REPO_ROOT     = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent
 VENDOR_SCRIPT = REPO_ROOT / "data_preprocessing" / "comp_cid_vendor_check.py"
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the SLURM submission script.
+
+    Returns:
+        Populated ``argparse.Namespace``.
+    """
     p = argparse.ArgumentParser(
         description="Submit the PubChem vendor check as a SLURM batch job.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
     slurm = p.add_argument_group("SLURM")
-    slurm.add_argument("--account",   required=True,
+    slurm.add_argument("--account", required=True,
                        help="SLURM account (e.g. berzelius-2026-62).")
     slurm.add_argument("--partition", default="berzelius",
                        help="SLURM partition.")
-    slurm.add_argument("--time",      default="48:00:00",
+    slurm.add_argument("--time", default="48:00:00",
                        help="Wall-clock time limit.")
-    slurm.add_argument("--mem",       default="8G",
+    slurm.add_argument("--mem", default="8G",
                        help="Memory per node.")
-    slurm.add_argument("--cpus",      type=int, default=1,
+    slurm.add_argument("--cpus", type=int, default=1,
                        help="CPUs per task.")
-    slurm.add_argument("--job-name",  default="vendor_check",
+    slurm.add_argument("--job-name", default="vendor_check",
                        help="SLURM job name.")
-    slurm.add_argument("--log-dir",   type=Path, default=REPO_ROOT / "logs",
+    slurm.add_argument("--log-dir", type=Path, default=REPO_ROOT / "logs",
                        help="Directory for .out / .err logs.")
-    slurm.add_argument("--mail",      default=None,
+    slurm.add_argument("--mail", default=None,
                        help="Email address for END/FAIL notifications.")
 
     script = p.add_argument_group("vendor check (forwarded to comp_cid_vendor_check.py)")
-    script.add_argument("--input",        type=Path,  default=None,
+    script.add_argument("--input", type=Path, default=None,
                         help="Input CSV (uses script default when omitted).")
-    script.add_argument("--cid-cache",    type=Path,  default=None,
+    script.add_argument("--cid-cache", type=Path, default=None,
                         help="Resumable SMILES→CID cache CSV.")
-    script.add_argument("--vendor-cache", type=Path,  default=None,
+    script.add_argument("--vendor-cache", type=Path, default=None,
                         help="Resumable CID→vendor cache CSV.")
-    script.add_argument("--output",       type=Path,  default=None,
+    script.add_argument("--output", type=Path, default=None,
                         help="Final output CSV.")
-    script.add_argument("--sleep",        type=float, default=0.35,
+    script.add_argument("--sleep", type=float, default=0.35,
                         help="Delay between PubChem API calls (seconds).")
-    script.add_argument("--retries",      type=int,   default=1,
+    script.add_argument("--retries", type=int, default=1,
                         help="Retry attempts on transient server errors.")
-    script.add_argument("--batch-size",   type=int,   default=100,
+    script.add_argument("--batch-size", type=int, default=100,
                         help="SMILES per batched POST request.")
 
     p.add_argument("--dry-run", action="store_true",
@@ -70,19 +75,33 @@ def parse_args() -> argparse.Namespace:
 
 
 def _script_args(args: argparse.Namespace) -> str:
+    """Build the comp_cid_vendor_check.py flag string from the forwarded args.
+
+    Args:
+        args: Parsed CLI namespace from ``parse_args``.
+
+    Returns:
+        Flags joined with a line continuation, ready to splice into the
+        generated sbatch script's ``python`` invocation.
+    """
     parts = [
         f"--sleep {args.sleep}",
         f"--retries {args.retries}",
         f"--batch-size {args.batch_size}",
     ]
-    if args.input:        parts.append(f"--input {args.input}")
-    if args.cid_cache:    parts.append(f"--cid-cache {args.cid_cache}")
-    if args.vendor_cache: parts.append(f"--vendor-cache {args.vendor_cache}")
-    if args.output:       parts.append(f"--output {args.output}")
+    if args.input:
+        parts.append(f"--input {args.input}")
+    if args.cid_cache:
+        parts.append(f"--cid-cache {args.cid_cache}")
+    if args.vendor_cache:
+        parts.append(f"--vendor-cache {args.vendor_cache}")
+    if args.output:
+        parts.append(f"--output {args.output}")
     return " \\\n        ".join(parts)
 
 
 def main() -> None:
+    """Build the sbatch script and submit (or dry-run) the vendor-check job."""
     args = parse_args()
     args.log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -106,7 +125,7 @@ def main() -> None:
 
         module load Mambaforge/23.3.1-1-hpc1-bdist
         eval "$(conda shell.bash hook)"
-        mamba activate env-protac-synth
+        mamba activate env-retrotac
 
         cd {REPO_ROOT}
         source .venv/bin/activate

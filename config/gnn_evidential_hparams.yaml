@@ -1,0 +1,23 @@
+# gnn_evidential_hparams.yaml
+# ===========================
+# Hyperparameters for the evidential CheMeleon GNN's final fit
+# (scripts/models/train.py --aggregate --hparams), which has no 5x5 CV run of
+# its own to read them off.
+#
+# The four head/optimizer values are the ones the regression-head GNN's nested
+# CV settled on -- outputs/models/gnn_20260828_182305/gnn_20260828_182305_hparams.yaml,
+# best inner objective across all 25 folds, cv_mean_r2 0.509. Reusing them keeps
+# the evidential run a controlled comparison against that model: same data, same
+# backbone, same head size, only the predictor (and therefore the loss) differs.
+#
+# The two remaining values are specific to this head:
+#   v_kl      weight on EvidentialLoss's evidence regularizer; chemprop's own
+#             default, a reasonable starting point before tuning it.
+#   batch_norm  off, matching the architecture the four values above were tuned
+#             under (and every GNN checkpoint trained so far).
+ffn_hidden_dim: 256
+ffn_n_layers: 1
+dropout: 0.2977877564003037
+max_lr: 0.0006649383292611083
+batch_norm: false
+v_kl: 0.2

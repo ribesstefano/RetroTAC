@@ -28,7 +28,7 @@ OUTPUT=$PROJ/data/synth_scores/routes_scores.csv
 # logs/synth_scores/ must already exist — create it once before first use:
 #   mkdir -p "$PROJ"/logs/synth_scores
 cd $PROJ
-python scripts/retrosynthesis/synthesizability_scores.py \
+python retro_scores/synthesizability_scores.py \
     "$INPUT" \
     "$OUTPUT" \
     --smiles-col molecule

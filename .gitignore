@@ -271,3 +271,15 @@ external/
 # Data folder
 chemeleon/
 data/
+
+# Apptainer build artifacts (multi-GB binaries; build locally, see apptainer/README.md)
+apptainer/*.sif
+apptainer/*.sandbox/
+
+backups/
+
+# NFS silly-rename artifacts (held open by live processes, cannot be deleted)
+.nfs*
+
+retrotac_staged/
+docs/superpowers/

@@ -25,8 +25,14 @@ Usage
 
 import numpy as np
 import pandas as pd
+from rdkit import RDLogger
 
 from . import sa_score, sc_score, ra_score, syba_score, gasa_score, fs_score
+
+# RAscore fingerprints each molecule with RDKit's legacy Morgan API, deprecated
+# in the venv-scoring rdkit pin -- silence the resulting per-molecule
+# "please use MorganGenerator" spam (18k+ console writes on a full run).
+RDLogger.DisableLog("rdApp.*")
 
 # Each scorer module owns its output column names via a module-level
 # COLUMNS constant, so the NaN-fallback path below can't drift out of sync
@@ -43,8 +49,28 @@ SCORERS = [
 SCORE_COLUMNS = [col for _, module in SCORERS for col in module.COLUMNS]
 
 
-def compute_scores(df: pd.DataFrame, smiles_col: str = "molecule") -> pd.DataFrame:
-    """Compute all synthesizability scores and add them as columns to df."""
+def compute_scores(
+    df: pd.DataFrame,
+    smiles_col: str = "molecule",
+    device: str = "auto",
+    batch_size: int = 128,
+    num_workers: int = 4,
+) -> pd.DataFrame:
+    """Compute all synthesizability scores and add them as columns to df.
+
+    Args:
+        df: DataFrame with a smiles_col column.
+        smiles_col: Name of the SMILES column.
+        device: Forwarded to fs_score.compute only -- see its module
+            docstring for the login-node GPU-crash caveat ('auto' grabs a
+            GPU if one is visible, which fails on a login node that has one
+            it cannot actually use; pass 'cpu' there). Every other scorer
+            here takes no device argument.
+        batch_size: Forwarded to fs_score.compute only -- molecules per
+            forward pass through FSscore's RankNet.
+        num_workers: Forwarded to fs_score.compute only -- FSscore's
+            dataloader worker count.
+    """
     smiles = df[smiles_col].tolist()
     n = len(smiles)
     print(f"Computing synthesizability scores for {n} molecules...")
@@ -52,7 +78,12 @@ def compute_scores(df: pd.DataFrame, smiles_col: str = "molecule") -> pd.DataFra
     for name, module in SCORERS:
         print(f"  Computing {name}...", end=" ", flush=True)
         try:
-            scores_df = module.compute(smiles)
+            if module is fs_score:
+                scores_df = module.compute(
+                    smiles, device=device, batch_size=batch_size, num_workers=num_workers
+                )
+            else:
+                scores_df = module.compute(smiles)
             for col in scores_df.columns:
                 df[col] = scores_df[col].values
             n_nan = int(scores_df.isna().any(axis=1).sum())

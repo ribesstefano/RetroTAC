@@ -9,7 +9,7 @@
 
 # Column names in the input CSV.
 columns:
-  smiles: SMILES        # molecule identifier carried into the summary
+  smiles: smiles        # molecule identifier carried into the summary
   resolved: resolved    # boolean-ish solvability flag (gates the tier)
   route: route          # the route dict, e.g. "{1: [['P => X.Y', label]], ...}"
 

@@ -1,0 +1,202 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+# `scoring` extra + the standalone retro_scores/mol_scores stack, both baked
+# into one image. Two separate Python environments live side by side:
+#   /opt/venv-main     Python 3.12, `uv sync --extra scoring --extra
+#                      notebooks` -- LLM-judge route scoring
+#                      (scripts/llm_scoring/) plus route_tree_score.py/
+#                      hac_score.py (both pure rdkit, no aizynthfinder) and
+#                      jupyterlab for interactive use.
+#   /opt/venv-scoring  Python 3.10, the heavy SA/SC/RA/SYBA/GASA/FSscore
+#                      stack from retro_scores/README.md (TF 2.8 + torch 2.0
+#                      + dgl 2.1 + old xgboost + 3 git-cloned/manually-fetched
+#                      models), staged per that doc since a flat pip install
+#                      does not solve.
+# See apptainer/README.md for the general recipe and why two envs live in
+# one image here specifically.
+
+%files
+    pyproject.toml /opt/repo/pyproject.toml
+    uv.lock /opt/repo/uv.lock
+    retrotac /opt/repo/retrotac
+    scripts /opt/repo/scripts
+    config /opt/repo/config
+    retro_scores /opt/repo/retro_scores
+
+%post
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl git git-lfs build-essential libxrender1 libxext6 libsm6
+    rm -rf /var/lib/apt/lists/*
+    # Global LFS filter registration, needed for the explicit `git clone` of
+    # syba below (see that step): a plain `pip install git+URL` does NOT
+    # trigger LFS smudging during uv/pip's own internal clone even with this
+    # registered, confirmed by testing both -- found by actually running
+    # SYBA after building, not from `pip install` succeeding silently with
+    # the ~130-byte LFS pointer stub in place of the real ~115 MB file.
+    git lfs install --skip-repo
+
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/opt/uv-bin sh
+    export PATH="/opt/uv-bin:${PATH}"
+    export UV_CACHE_DIR=/opt/uv-cache
+
+    # ---- venv-main: python 3.12, `scoring` extra + notebooks --------------
+    uv python install 3.12
+    export UV_PROJECT_ENVIRONMENT=/opt/venv-main
+    cd /opt/repo
+    uv sync --frozen --extra scoring --extra notebooks
+
+    # ---- venv-scoring: python 3.10, retro_scores/mol_scores stack ---------
+    # Staged per retro_scores/README.md -- a flat `pip install -r` does not
+    # solve this combination. Kept in the same order as that doc; if you
+    # change a pin here, change it there too (and vice versa).
+    uv python install 3.10
+    uv venv /opt/venv-scoring --python 3.10
+    PY=/opt/venv-scoring/bin/python
+    PIP() { uv pip install --python "$PY" "$@"; }
+
+    PIP numpy==1.24.3 protobuf==3.20.0
+    PIP tensorflow==2.8.0 keras==2.8.0
+    PIP torch==2.0.0 torchvision==0.15.1 torchaudio==2.0.1
+    PIP dgl==2.1.0 dgllife==0.3.2
+    PIP xgboost==1.0.2 scikit-learn==1.7.2 rdkit==2026.3.3
+    PIP pytorch-lightning==2.0.2 lightning==2.0.7
+    PIP pandas==2.3.3 gdown==6.1.0
+    PIP "setuptools<81"
+    PIP "torchdata==0.6.0"
+    # fsscore's own pyproject.toml pins this (retro_scores/README.md's staged
+    # list omits it); fsscore.models.ranknet needs it directly, not just
+    # transitively -- found by actually importing it, not from the pinned
+    # list "looking complete".
+    PIP torch-geometric==2.3.0
+
+    # syba's resources/*.csv.gz are Git-LFS-tracked; `pip install git+URL`
+    # does not trigger the LFS smudge filter during uv/pip's internal clone
+    # (confirmed: `git lfs install --skip-repo` beforehand made no
+    # difference), so it silently installs the ~130-byte pointer stub
+    # instead of the real ~115 MB file. Clone directly with plain git
+    # (which DOES smudge correctly) and install from that local copy instead
+    # of the remote URL.
+    SYBA_TMP=$(mktemp -d)
+    git clone --depth 1 https://github.com/lich-uct/syba.git "$SYBA_TMP"
+    PIP --no-deps --no-build-isolation "$SYBA_TMP"
+    rm -rf "$SYBA_TMP"
+    PIP --no-deps --no-build-isolation git+https://github.com/reymond-group/RAscore.git
+    PIP --no-deps --no-build-isolation git+https://github.com/schwallergroup/fsscore.git
+
+    # RAscore's bundled model is skipped by --no-deps; copy it in manually.
+    # mktemp -d, not a fixed /tmp/RAscore: /tmp is host-shared under
+    # --fakeroot on this system (observed: another user's own
+    # /tmp/RAscore, from following retro_scores/README.md's literal
+    # instructions on this same shared login node, collided with this
+    # build's clone -- a predictable shared-tmp path is a real multi-user
+    # hazard here, not just a same-user idempotency issue).
+    RASCORE_TMP=$(mktemp -d)
+    git clone --depth 1 https://github.com/reymond-group/RAscore.git "$RASCORE_TMP"
+    SP=$("$PY" -c "import os, RAscore; print(os.path.dirname(RAscore.__file__))")
+    mkdir -p "$SP/models"
+    cp -r "$RASCORE_TMP/RAscore/models/"* "$SP/models/"
+    rm -rf "$RASCORE_TMP"
+
+    # SCScore / GASA: not pip packages, imported by filesystem path. Baked at
+    # /opt/vendor (NOT under /opt/repo/external) so the live-code bind mount
+    # (apptainer/bind_live_repo.sh skips external/ on purpose) never shadows
+    # them; PROTAC_EXTERNAL_DIR in %environment repoints
+    # retro_scores/mol_scores at this path instead of the default
+    # <repo-root>/external/ (see retro_scores/mol_scores/__init__.py).
+    mkdir -p /opt/vendor
+    git clone --depth 1 https://github.com/CatSci/SCScore.git /opt/vendor/SCScore
+    git clone --depth 1 https://github.com/cadd-synthetic/GASA.git /opt/vendor/GASA
+    # Upstream bug in cadd-synthetic/GASA (confirmed by actually running it,
+    # not from the clone succeeding): model/data.py's mkdir_p() references
+    # errno.EEXIST without importing errno, raising NameError instead of the
+    # intended "directory already exists" handling -- always hit here since
+    # the target directory already exists on every run. One-line patch.
+    sed -i '1i import errno' /opt/vendor/GASA/model/data.py
+
+    # FSscore: pip's `--no-deps` install above only pulled in fsscore/__init__.py
+    # -- fsscore's own pyproject.toml hand-lists `packages = ["fsscore"]"
+    # under a src/ layout without its subpackages (models/, data/, utils/),
+    # so setuptools silently drops them. Confirmed by inspecting a full
+    # clone, not assumed. Fill in the missing subpackages directly from a
+    # clone. Its pretrained checkpoint also turns out to be checked directly
+    # into this repo (models/*.ckpt, ~1.4 MB, not an LFS pointer) --
+    # retro_scores/README.md's "figshare, not automatable" note predates
+    # that (or missed it); bake it in here too, no manual download needed.
+    FSSCORE_TMP=$(mktemp -d)
+    git clone --depth 1 https://github.com/schwallergroup/fsscore.git "$FSSCORE_TMP"
+    FSP=$("$PY" -c "import os, fsscore; print(os.path.dirname(fsscore.__file__))")
+    cp -r "$FSSCORE_TMP/src/fsscore/." "$FSP/"
+    mkdir -p /opt/vendor/fsscore/models
+    cp "$FSSCORE_TMP/models/pretrain_graph_GGLGGL_ep242_best_valloss.ckpt" /opt/vendor/fsscore/models/
+    rm -rf "$FSSCORE_TMP"
+
+    # retro_scores itself, editable (retro_scores/README.md Sec 4):
+    # retro_scores/synthesizability_scores.py does a bare
+    # `from mol_scores import ...` with no path setup of its own, so
+    # mol_scores must actually be installed into this venv.
+    PIP -e /opt/repo/retro_scores --no-build-isolation
+
+    rm -rf /opt/uv-cache
+
+%environment
+    export PATH=/opt/uv-bin:/opt/venv-main/bin:${PATH}
+    export UV_PROJECT_ENVIRONMENT=/opt/venv-main
+    export PROTAC_EXTERNAL_DIR=/opt/vendor
+
+%runscript
+    cd /opt/repo
+    exec /opt/venv-scoring/bin/python retro_scores/synthesizability_scores.py "$@"
+
+%apprun score-route-tree
+    cd /opt/repo
+    exec python retro_scores/route_scores/route_tree_score.py "$@"
+
+%apprun llm-score
+    cd /opt/repo
+    exec python scripts/llm_scoring/llm_scoring.py "$@"
+
+%apprun notebook
+    cd /opt/repo
+    exec jupyter lab --no-browser --ip=0.0.0.0 --port="${JUPYTER_PORT:-8888}" \
+        --notebook-dir=/opt/repo "$@"
+
+%labels
+    profile scoring
+    pyproject_extra scoring notebooks
+
+%help
+    Scoring container: molecule synthesizability scoring (SA/SC/RA/SYBA/
+    GASA/FSscore) plus route-composite and LLM-judge route scoring, two
+    Python environments in one image (see the header comment in this file).
+
+    Build (from the repo root -- this one is slow, several GB of TF/torch/dgl
+    downloads plus two git clones):
+        apptainer build --fakeroot apptainer/scoring.sif apptainer/scoring.def
+
+    Run (default app: molecule scoring, python 3.10 venv-scoring --
+    FSscore needs a GPU, so add --nv; GASA needs --writable-tmpfs, since its
+    own code writes a results/ dir next to itself under /opt/vendor, which
+    is otherwise read-only (the SIF image); everything else in this app is
+    CPU-only and read-only-safe):
+        apptainer run --nv --writable-tmpfs $(bash apptainer/bind_live_repo.sh) \
+            apptainer/scoring.sif data/raw/input.csv data/synth_scores/output.csv --smiles-col molecule
+
+    FSscore's checkpoint is baked into the image (see the %post comment --
+    it turns out to ship in the fsscore repo itself, not figshare-only as
+    retro_scores/README.md says); no extra download or bind-mount needed.
+
+    Run (route composite score + LLM judge, python 3.12 venv-main):
+        apptainer run --app score-route-tree $(bash apptainer/bind_live_repo.sh) \
+            apptainer/scoring.sif data/routes/routes.csv data/processed/route_scores/scored.csv
+
+        apptainer run --app llm-score $(bash apptainer/bind_live_repo.sh) \
+            apptainer/scoring.sif data/routes/routes.csv data/llm_scoring/scored.csv
+
+    Interactive development / notebooks (python 3.12 venv-main; see
+    apptainer/README.md, "Developing against a container"):
+        apptainer run --app notebook $(bash apptainer/bind_live_repo.sh) \
+            apptainer/scoring.sif

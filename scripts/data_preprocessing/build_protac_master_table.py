@@ -15,18 +15,13 @@ Output columns:
 """
 
 import argparse
-import sys
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 from rdkit import RDLogger
 
-RDLogger.DisableLog("rdApp.*")
-
-sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
-
-from chem_utils import (  # noqa: E402
+from retrotac.chem_utils import (
     canon_smiles,
     make_hash_ids,
     make_sequential_ids,
@@ -34,6 +29,8 @@ from chem_utils import (  # noqa: E402
     smiles_hash,
     std_smiles,
 )
+
+RDLogger.DisableLog("rdApp.*")
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 

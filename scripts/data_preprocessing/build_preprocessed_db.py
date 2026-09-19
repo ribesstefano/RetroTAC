@@ -34,7 +34,13 @@ CHUNKSIZE = 10_000
 
 
 def _write_table(conn: sqlite3.Connection, df: pd.DataFrame, table: str) -> None:
-    """Load df into SQLite in chunks, reporting progress with tqdm."""
+    """Load a DataFrame into SQLite in chunks, reporting progress with tqdm.
+
+    Args:
+        conn: Open SQLite connection.
+        df: DataFrame to write.
+        table: Destination table name; replaced if it already exists.
+    """
     chunks = range(0, len(df), CHUNKSIZE)
     for i, start in enumerate(tqdm(chunks, desc=f"  {table}", unit="chunk")):
         df.iloc[start : start + CHUNKSIZE].to_sql(
@@ -45,7 +51,11 @@ def _write_table(conn: sqlite3.Connection, df: pd.DataFrame, table: str) -> None
 
 
 def _build_indexes(conn: sqlite3.Connection) -> None:
-    """Create covering indexes for FK joins and common filter columns."""
+    """Create covering indexes for FK joins and common filter columns.
+
+    Args:
+        conn: Open SQLite connection; indexes are committed before returning.
+    """
     stmts = [
         "CREATE INDEX IF NOT EXISTS idx_protac_warhead_id    ON protac(warhead_id)",
         "CREATE INDEX IF NOT EXISTS idx_protac_linker_id     ON protac(linker_id)",
@@ -62,17 +72,22 @@ def _build_indexes(conn: sqlite3.Connection) -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Returns:
+        Populated ``argparse.Namespace``.
+    """
     p = argparse.ArgumentParser(
         description="Merge preprocessed CSVs into a single SQLite database.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--protac",  type=Path, default=_PROJECT_ROOT / "data/preprocessed/protac_master.csv",
+    p.add_argument("--protac", type=Path, default=_PROJECT_ROOT / "data/preprocessed/protac_master.csv",
                    help="PROTAC master table CSV.")
-    p.add_argument("--capped",  type=Path, default=_PROJECT_ROOT / "data/preprocessed/component_capped.csv",
+    p.add_argument("--capped", type=Path, default=_PROJECT_ROOT / "data/preprocessed/component_capped.csv",
                    help="Capped component variants CSV.")
-    p.add_argument("--vendor",  type=Path, default=_PROJECT_ROOT / "data/preprocessed/component_cid_vendor.csv",
+    p.add_argument("--vendor", type=Path, default=_PROJECT_ROOT / "data/preprocessed/component_cid_vendor.csv",
                    help="PubChem CID and vendor status CSV.")
-    p.add_argument("--output",  type=Path, default=_PROJECT_ROOT / "data/preprocessed/pipeline.db",
+    p.add_argument("--output", type=Path, default=_PROJECT_ROOT / "data/preprocessed/pipeline.db",
                    help="SQLite output path (overwritten if it exists).")
     return p.parse_args()
 
@@ -83,6 +98,14 @@ def main(
     vendor_path: Path,
     db_path: Path,
 ) -> None:
+    """Read the three preprocessed CSVs and assemble them into one SQLite database.
+
+    Args:
+        protac_path: PROTAC master table CSV path.
+        capped_path: Capped component variants CSV path.
+        vendor_path: PubChem CID and vendor status CSV path.
+        db_path: Destination SQLite path; overwritten if it already exists.
+    """
     print("Reading CSVs...")
     protac = pd.read_csv(protac_path)
     capped = pd.read_csv(capped_path)
