@@ -45,5 +45,12 @@ torch:                   # for the MLP/GNN later
   patience: 20
   batch_size: 256         # fixed (not Optuna-tuned) for MLP/GNN
 
+xgb:
+  # XGBoost regression objective. "reg:pseudohubererror" (default, robust to
+  # outliers) or "reg:tweedie" (for right-skewed/zero-inflated targets); when
+  # set to "reg:tweedie", tweedie_variance_power becomes an Optuna-tuned
+  # hyperparameter in [1.01, 1.99].
+  objective: reg:pseudohubererror
+
 gnn:
   chemeleon_weights: /home/x_steri/storage/PROTAC-Synthesizability/chemeleon/chemeleon_mp.pt

@@ -17,7 +17,7 @@ import skops.io as sio
 import xgboost as xgb
 from rdkit import RDLogger
 from sklearn.metrics import r2_score
-from sklearn.preprocessing import QuantileTransformer
+from sklearn.preprocessing import FunctionTransformer, QuantileTransformer
 
 from retrotac.chem_utils import (  # noqa: E402
     compute_fingerprints,
@@ -172,11 +172,6 @@ class XGBoostRegressor:
             self.svd_components,
             self.random_state,
         )
-        self.target_transformer_ = QuantileTransformer(
-            output_distribution="normal", random_state=self.random_state
-        )
-        X_proc = self.preprocessor_.fit_transform(X)
-        y_transf = self.target_transformer_.fit_transform(y)
 
         default_xgb = dict(
             tree_method="hist",
@@ -187,8 +182,23 @@ class XGBoostRegressor:
             early_stopping_rounds=50 if smiles_val is not None else None,
             random_state=self.random_state,
         )
+        merged_xgb = {**default_xgb, **self.xgb_params}
+
+        # reg:tweedie needs the target on its raw, non-negative scale -- the
+        # QuantileTransformer's normal output would introduce negative values
+        # and destroy the skew/zero-mass Tweedie is meant to model.
+        if merged_xgb["objective"] == "reg:tweedie":
+            self.target_transformer_ = FunctionTransformer()
+        else:
+            self.target_transformer_ = QuantileTransformer(
+                output_distribution="normal", random_state=self.random_state
+            )
+
+        X_proc = self.preprocessor_.fit_transform(X)
+        y_transf = self.target_transformer_.fit_transform(y)
+
         logger.debug("default_xgb=%s xgb_params=%s", default_xgb, self.xgb_params)
-        self.model_ = xgb.XGBRegressor(**{**default_xgb, **self.xgb_params})
+        self.model_ = xgb.XGBRegressor(**merged_xgb)
 
         if smiles_val is not None:
             X_val_proc = self.preprocessor_.transform(

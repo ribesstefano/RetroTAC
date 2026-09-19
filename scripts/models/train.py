@@ -202,6 +202,8 @@ def main() -> None:
             "use_descriptors": use_descriptors,
             "device": args.device,
         }
+        if args.model == "xgb":
+            build_kwargs["objective"] = cfg.xgb.objective
 
     # batch_size is a fixed torch training param (not Optuna-tuned) for the NN models
     if args.model in ("mlp", "gnn"):

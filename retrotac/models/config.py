@@ -47,6 +47,17 @@ class TorchConfig:
 
 
 @dataclass(frozen=True)
+class XGBConfig:
+    """XGBoost regression objective (YAML section `xgb`, optional).
+
+    "reg:pseudohubererror" (default) or "reg:tweedie" -- selecting the latter
+    also puts tweedie_variance_power into the Optuna search space (see
+    retrotac.models.xgb.hpo.build_xgb).
+    """
+    objective: str = "reg:pseudohubererror"
+
+
+@dataclass(frozen=True)
 class GNNConfig:
     """CheMeleon backbone path + which predictor head to put on it.
 
@@ -85,6 +96,7 @@ class ModelsConfig:
     cross_validation: CrossValidationConfig
     torch: TorchConfig
     gnn: GNNConfig
+    xgb: XGBConfig = XGBConfig()
     hpo: HPOConfig = HPOConfig()
 
     @classmethod
@@ -107,6 +119,7 @@ class ModelsConfig:
         cv = raw["cross_validation"]
         torch_cfg = raw["torch"]
         gnn_cfg = raw.get("gnn", {})
+        xgb_cfg = raw.get("xgb", {})
         hpo_cfg = raw.get("hpo", {})
 
         return cls(
@@ -130,6 +143,9 @@ class ModelsConfig:
             gnn=GNNConfig(
                 chemeleon_weights=gnn_cfg.get("chemeleon_weights", "chemeleon_mp.pt"),
                 head=gnn_cfg.get("head", "regression"),
+            ),
+            xgb=XGBConfig(
+                objective=xgb_cfg.get("objective", "reg:pseudohubererror"),
             ),
             hpo=HPOConfig(
                 objective_alpha=float(hpo_cfg.get("objective_alpha", DEFAULT_OBJECTIVE_ALPHA)),

@@ -1248,6 +1248,21 @@ def run_ensemble_strategies(
     return df
 
 
+class _Tee:
+    """Writes to two streams at once, used to mirror stdout into a report file."""
+
+    def __init__(self, *streams: Any) -> None:
+        self._streams = streams
+
+    def write(self, data: str) -> None:
+        for s in self._streams:
+            s.write(data)
+
+    def flush(self) -> None:
+        for s in self._streams:
+            s.flush()
+
+
 # ── main ────────────────────────────────────────────────────────────────────
 def main() -> None:
     """CLI entry point: load CV fold metrics, run AutoRank, and optionally test-eval."""
@@ -1258,6 +1273,19 @@ def main() -> None:
     out_dir    = args.output_root / "results" / args.out
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    report_path = out_dir / "report.txt"
+    real_stdout = sys.stdout
+    with open(report_path, "w") as report_file:
+        sys.stdout = _Tee(real_stdout, report_file)
+        try:
+            _run(args, cfg, cv_dir, models_dir, out_dir)
+        finally:
+            sys.stdout = real_stdout
+    print(f"Report saved to {report_path}")
+
+
+def _run(args: argparse.Namespace, cfg: ModelsConfig, cv_dir: Path, models_dir: Path, out_dir: Path) -> None:
+    """The actual body of `main`, run with stdout mirrored to `out_dir/report.txt`."""
     print("[1/3] Loading CV fold metrics...")
     wide, long = build_cv_frames(
         args.models, cv_dir, cfg.cross_validation.seeds, cfg.cross_validation.n_folds, args.rank_metric,
