@@ -227,7 +227,7 @@ def _compute_tukey_results(
 
 def _draw_tukey_panel(
     ax: plt.Axes, metric: str, tukey_result, best_method: str,
-    df_cv: pd.DataFrame, group_col: str = "method",
+    df_cv: pd.DataFrame, group_col: str = "method", nbins: int = 4,
 ) -> None:
     """Draw one metric's simultaneous-CI panel into `ax` and recolor/label it.
 
@@ -238,6 +238,8 @@ def _draw_tukey_panel(
         best_method: The reference group plot_simultaneous compares every other to.
         df_cv: Long-format CV scores frame, for the omnibus ANOVA.
         group_col: Name of the grouping column.
+        nbins: Max x-tick count (see the MaxNLocator note below) -- lower it
+            for a narrower panel, e.g. make_fig3's side-by-side layout.
     """
     # plot_simultaneous runs `fig.set_size_inches(figsize)` unconditionally --
     # even when handed an existing `ax`, so it silently resizes OUR figure to
@@ -252,13 +254,13 @@ def _draw_tukey_panel(
     recolor_tukey(ax)
     p_omnibus = run_anova(df_cv, metric, group_col=group_col)
     ax.set_xlabel(METRIC_DISPLAY_NAMES.get(metric, metric.upper()), fontsize=ps.LABEL_FONTSIZE)
-    ax.set_title(f"p = {p_omnibus:.2e}", fontsize=ps.TITLE_FONTSIZE)
+    ax.set_title(f"p = {p_omnibus:.2e}", fontsize=ps.ANNOT_FONTSIZE)
     ax.tick_params(axis="y", labelsize=ps.TICK_FONTSIZE)
     # A metric whose groups differ in the third decimal (MAE here) gets
     # matplotlib's default ~8 ticks, and eight 5-character labels do not fit
     # across a half-width panel -- they overlap into one grey smear. Cap the
     # count instead of shrinking the type below everything else in the figure.
-    ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=4, min_n_ticks=3))
+    ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=nbins, min_n_ticks=3))
     ax.grid(False)     # no horizontal rule at each model's tick -- just the CI bars
 
 
@@ -310,15 +312,25 @@ def make_simultaneous_ci_plot(
     save_fig(fig, f"{prefix}simultaneous_ci_grid")
 
 
+# Metrics-textbox corner: axes-fraction (x, y, va, ha) per named location.
+_ANNOT_POSITIONS = {
+    "upper left": (0.03, 0.97, "top", "left"),
+    "lower right": (0.97, 0.03, "bottom", "right"),
+}
+
+
 # ── Fig 3: held-out test set, predicted vs. measured (one panel per model) ──
 def _draw_parity_panel(
     ax: plt.Axes, y_pred: np.ndarray, y_true: np.ndarray, color: str,
     thr: float, m: pd.Series, title: str, tick_fs: float = ps.TICK_FONTSIZE,
+    show_title: bool = True, lims: Tuple[float, float] = (0.0, 1.0),
+    ticks: np.ndarray = None, predicted_on_y: bool = False,
+    annot_fontsize: float = ps.ANNOT_FONTSIZE, annot_loc: str = "upper left",
 ) -> None:
     """Draw one predicted-vs-measured parity panel into `ax`, with a metrics textbox.
 
     Shared by plot_test_scatter (a grid, one label per panel) and make_fig3
-    (two of these panels in the row below the Tukey CI grid).
+    (the Caruana panel next to the Tukey CI grid).
 
     Args:
         ax: Target axes.
@@ -328,21 +340,37 @@ def _draw_parity_panel(
         thr: Classification threshold, for the reference cross-hairs.
         m: This label's row of metrics (mae, rmse, r2, spearman_rho,
             clf_precision, clf_recall, clf_roc_auc), e.g. metrics_df.loc[label].
-        title: Panel title (the model or strategy name).
+        title: Panel title (the model or strategy name); ignored if
+            `show_title` is False.
         tick_fs: Tick label font size.
+        show_title: Draw `title` above the panel. False when the panel is
+            already identified some other way (a panel letter, a caption).
+        lims: Shared (min, max) for both axes; the identity line runs corner
+            to corner over this range.
+        ticks: Explicit shared tick positions; defaults to a 0.25 step
+            across `lims`.
+        predicted_on_y: Put `y_pred` on the y-axis and `y_true` on the
+            x-axis (the parity-plot convention: measured value on x, model
+            output on y). False keeps the historical y_pred-on-x layout.
+        annot_fontsize: Font size for the metrics textbox.
+        annot_loc: Corner for the metrics textbox, a key of _ANNOT_POSITIONS.
     """
-    ax.scatter(y_pred, y_true, color=color, alpha=0.35, s=5, edgecolor="none",
+    x_vals, y_vals = (y_true, y_pred) if predicted_on_y else (y_pred, y_true)
+    ax.scatter(x_vals, y_vals, color=color, alpha=0.4, s=6, edgecolor="none",
               rasterized=True, zorder=1)
-    ax.plot([0, 1], [0, 1], color="black", linestyle="--", linewidth=0.8, zorder=2)
-    ax.axhline(thr, color=ps.STATS["reference_line"], linestyle="--", linewidth=0.6,
+    ax.plot(lims, lims, color="black", linestyle="--", linewidth=0.8, zorder=2)
+    ax.axhline(thr, color="#8D2424", linestyle="--", linewidth=0.6,
               alpha=0.7, zorder=3)
-    ax.axvline(thr, color=ps.STATS["reference_line"], linestyle="--", linewidth=0.6,
+    ax.axvline(thr, color="#8D2424", linestyle="--", linewidth=0.6,
               alpha=0.7, zorder=3)
 
-    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
-    ax.set_xticks(np.arange(0, 1.01, 0.25)); ax.set_yticks(np.arange(0, 1.01, 0.25))
+    ax.set_xlim(lims); ax.set_ylim(lims)
+    if ticks is None:
+        ticks = np.arange(lims[0], lims[1] + 1e-9, 0.25)
+    ax.set_xticks(ticks); ax.set_yticks(ticks)
     ax.tick_params(labelsize=tick_fs)
-    ax.set_title(title, fontsize=ps.TITLE_FONTSIZE, fontweight="bold")
+    if show_title:
+        ax.set_title(title, fontsize=ps.TITLE_FONTSIZE, fontweight="bold")
     ax.grid(alpha=0.3)          # both axes here, unlike the y-only default
     ax.set_box_aspect(1)        # square: a parity plot must not be stretched
 
@@ -355,10 +383,11 @@ def _draw_parity_panel(
         f"Recall: {m['clf_recall']:.2f}\n"
         f"AUC: {m['clf_roc_auc']:.2f}"
     )
-    ax.text(0.03, 0.97, text, transform=ax.transAxes, va="top", ha="left",
-            fontsize=ps.ANNOT_FONTSIZE, linespacing=1.25,
+    x, y, va, ha = _ANNOT_POSITIONS[annot_loc]
+    ax.text(x, y, text, transform=ax.transAxes, va=va, ha=ha,
+            fontsize=annot_fontsize, linespacing=1.25,
             bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="black",
-                      linewidth=0.4, alpha=0.9))
+                      linewidth=0.4, alpha=0.8))
 
 
 def plot_test_scatter(
@@ -591,13 +620,13 @@ def plot_ensemble_scatter(results_dir: Path, prefix: str = "") -> None:
         plot_test_scatter(predictions, row, prefix=f"{prefix}{name}_")
 
 
-# ── Fig 3 (combined): regression Tukey CI grid + two ensemble parity plots ──
+# ── Fig 3 (combined): regression Tukey CI grid + Caruana ensemble parity plot ──
 def make_fig3(df_cv: pd.DataFrame, results_dir: Path, prefix: str = "") -> None:
-    """Composite two-block figure: (a) regression Tukey CI grid, (b) Best Single & Caruana parity plots.
+    """Composite two-panel figure: (a) regression Tukey CI grid, (b) Caruana parity plot.
 
     Combines make_simultaneous_ci_plot's regression metrics (r2, rmse, mae,
-    spearman_rho) with two of plot_ensemble_scatter's per-strategy panels
-    into one lettered figure, reusing the same underlying computations
+    spearman_rho) with plot_ensemble_scatter's Caruana panel into one
+    side-by-side, lettered figure, reusing the same underlying computations
     (_compute_tukey_results/_draw_tukey_panel,
     _reconstruct_ensemble_prediction/_draw_parity_panel) rather than
     duplicating them.
@@ -605,8 +634,8 @@ def make_fig3(df_cv: pd.DataFrame, results_dir: Path, prefix: str = "") -> None:
     Args:
         df_cv: Long-format CV scores frame (see make_simultaneous_ci_plot).
         results_dir: Directory holding ensemble_strategies.csv,
-            ensemble_weights_*.json, and cv_fold_test_predictions.pkl (an
-            evaluation.py --ensemble --out folder).
+            ensemble_weights_caruana.json, and cv_fold_test_predictions.pkl
+            (an evaluation.py --ensemble --out folder).
         prefix: Optional filename prefix for the saved figure.
     """
     reg_metrics   = ["r2", "rmse", "mae", "spearman_rho"]
@@ -623,83 +652,118 @@ def make_fig3(df_cv: pd.DataFrame, results_dir: Path, prefix: str = "") -> None:
         return
     metrics_df = pd.read_csv(csv_path, index_col=0)
 
-    panels_b = []   # (title, y_pred, y_true, metrics_row, threshold, color)
-    for name, title in (("best_single", "Best Single"), ("caruana", "Caruana")):
-        weights_path = results_dir / f"ensemble_weights_{name}.json"
-        if not weights_path.exists() or name not in metrics_df.index:
-            print(f"make_fig3: no {weights_path} / row -- skipping the {title!r} panel.")
-            continue
-        with open(weights_path) as f:
-            weights = json.load(f)["weights"]
-        y_pred, y_true = _reconstruct_ensemble_prediction(results_dir, weights)
-        m   = metrics_df.loc[name]
-        thr = float(m["clf_threshold"]) if "clf_threshold" in metrics_df.columns else 0.7
-        panels_b.append((title, y_pred, y_true, m, thr, STRATEGY_COLOR_MAP.get(title, DEFAULT_COLOR)))
-
-    if not panels_b:
-        print("make_fig3: no ensemble-scatter panels available -- skipping.")
+    name, title = "caruana", "Caruana"
+    weights_path = results_dir / f"ensemble_weights_{name}.json"
+    if not weights_path.exists() or name not in metrics_df.index:
+        print(f"make_fig3: no {weights_path} / row -- skipping "
+              f"(needs the Caruana ensemble panel).")
         return
+    with open(weights_path) as f:
+        weights = json.load(f)["weights"]
+    y_pred, y_true = _reconstruct_ensemble_prediction(results_dir, weights)
+    m     = metrics_df.loc[name]
+    thr   = float(m["clf_threshold"]) if "clf_threshold" in metrics_df.columns else 0.7
+    color = ps.PALETTE["light_blue"] # STRATEGY_COLOR_MAP.get(title, DEFAULT_COLOR)
 
-    # Two stacked blocks, not two side-by-side ones. The figure is written at
-    # the document's \linewidth and imported at 100% (see pubstyle.set_size),
-    # so width is a hard budget: six panels in one row would each get under an
-    # inch. Stacking also gives both blocks their natural aspect -- a CI panel
-    # with three groups wants to be wide and short, a parity plot wants to be
-    # square -- instead of splitting the difference.
-    fig_width_in = ps.set_size()[0]
+    # Side by side, not stacked: with a single scatter panel left, stacking it
+    # under the full-width CI grid wastes the width on one square and reads
+    # nearly as tall as it is wide. Putting it beside (a) instead makes the
+    # whole figure read as clearly landscape.
+    #
+    # Deliberately NOT ps.set_size()[0] (\linewidth, 5.5 in): at that width
+    # panel (a)'s two CI columns come out under 1.5 in each and their tick
+    # labels crowd the fixed document-matching font. This figure is sized
+    # wider on purpose and needs a wide/spanning placement in the document
+    # (or a two-column figure* environment) rather than a plain
+    # \includegraphics[width=\linewidth] like every other figure here.
+    fig_width_in = 7.0
     # (a): two rows of CI panels. Each needs room for three group rows, an
     # x label and the p-value title; below ~1.2 in per row the group labels
-    # start colliding with the intervals.
-    height_a = 1.16 * int(np.ceil(len(tukey_results) / 2))
-    # (b): the squares are set_box_aspect(1) and share the full width, so each
-    # is about (width - the left labels) / n wide; give the row that much
-    # height plus a strip for the tick labels, the title and the shared x
-    # label, or the squares get height-limited and leave dead space either
-    # side of the row.
-    height_b = (fig_width_in - 0.55) / len(panels_b) + 0.62
-    # Headroom for the (a) letter. It is placed with in_layout=False (see
-    # below), so constrained_layout does not reserve for it -- and the page is
-    # written at exactly figsize, with no tight bbox to rescue anything that
-    # lands outside. Without this strip the letter is sliced off at the top.
+    # start colliding with the intervals. Taller rows than the bare minimum
+    # so (b)'s square (tied to this height) gets more than a sliver of the
+    # extra width -- (a) had been soaking up all of it.
+    nrows_a  = int(np.ceil(len(tukey_results) / 2))
+    height_a = 1.35 * nrows_a
+
+    # (b) carries no title now, so it only needs a hairline of clearance above
+    # and room for tick labels + an axis label below.
+    panel_b_side = height_a - 0.45
+    label_margin = 0.5    # (b)'s own y tick labels + y-axis label
+    width_b      = panel_b_side + label_margin
+
+    # No deliberate gap: GridSpec's own `wspace` (below) is set to 0, and the
+    # measure-and-correct step after (b) is drawn removes the rest of the
+    # visible gap, which came from box_aspect(1) sizing (b) by height_a
+    # rather than by the (generous, guessed) `width_b` reserved for it here.
+    width_a = fig_width_in - width_b
+
+    # Headroom for the panel letters. They are placed with in_layout=False
+    # (see below), so constrained_layout does not reserve for them -- and the
+    # page is written at exactly figsize, with no tight bbox to rescue
+    # anything that lands outside. Without this strip they are sliced off.
     letter_pad_in = 0.16
-    fig_height_in = height_a + height_b + letter_pad_in
+    fig_height_in = height_a + letter_pad_in
 
     fig = plt.figure(figsize=(fig_width_in, fig_height_in), layout="constrained")
     fig.get_layout_engine().set(rect=(0, 0, 1, 1 - letter_pad_in / fig_height_in))
-    gs  = fig.add_gridspec(2, 1, height_ratios=[height_a, height_b], hspace=0.06)
+    gs = fig.add_gridspec(1, 2, width_ratios=[width_a, width_b], wspace=0.05)
 
     gs_a   = gs[0].subgridspec(2, 2)
     axes_a = [fig.add_subplot(gs_a[i // 2, i % 2]) for i in range(len(tukey_results))]
     for ax, (metric, (tukey_result, best_method)) in zip(axes_a, tukey_results.items()):
         _draw_tukey_panel(ax, metric, tukey_result, best_method, df_cv)
 
-    gs_b   = gs[1].subgridspec(1, len(panels_b))
-    axes_b = [fig.add_subplot(gs_b[0, i]) for i in range(len(panels_b))]
-    for j, (ax, (title, y_pred, y_true, m, thr, color)) in enumerate(zip(axes_b, panels_b)):
-        _draw_parity_panel(ax, y_pred, y_true, color, thr, m, title=title)
-        if j == 0:
-            ax.set_ylabel("Measured synthesizability")
-        else:
-            ax.tick_params(labelleft=False)
-    # Both (b) panels show the same quantity on x, so the label belongs to the
-    # row, not to each panel. (b) is the bottom row and spans the full width,
-    # so the figure-level label lands centered under it -- and constrained
-    # layout reserves its strip, unlike a label placed after the fact.
-    fig.supxlabel("Predicted synthesizability", fontsize=ps.LABEL_FONTSIZE,
-                  fontweight="bold")
+    ax_b = fig.add_subplot(gs[1])
+    # box_aspect(1) makes ax_b smaller than its (width_b, height_a) cell: its
+    # true side is set by height_a (minus the reserved title strip), so it
+    # rarely uses the full, deliberately generous `label_margin` reserved for
+    # its y tick labels. Anchoring "N" (top-center) used to split that leftover
+    # width evenly, dumping about half of it *outside* the figure as dead
+    # space past (b)'s right edge. "NE" pins (b) flush to the cell's top-right
+    # corner instead -- flush with the figure's own right edge, since gs[1] is
+    # the last column -- so the same leftover lands as extra room in the a/b
+    # gap instead of as outer-edge whitespace, and both blocks' tops still
+    # land on the same line.
+    ax_b.set_anchor("NE")
+    # (a)'s panels each reserve title space above them (the "p = ..." line);
+    # (b) has no title (show_title=False below), so without this it sits
+    # noticeably higher than (a) despite the top anchor. A blank title at the
+    # same fontsize reserves the identical header height.
+    ax_b.set_title(" ", fontsize=ps.TITLE_FONTSIZE)
+    _draw_parity_panel(
+        ax_b, y_pred, y_true, color, thr, m, title=title, show_title=False,
+        lims=(min(y_pred) - 0.05, 1.05), ticks=np.array([0.0, 0.5, 0.7, 1.0]),
+        predicted_on_y=True, annot_fontsize=ps.ANNOT_FONTSIZE + 1,
+        annot_loc="lower right",
+    )
+    # Convention: the model output is the dependent variable, so it goes on
+    # y; the measured/reference value goes on x. Same size as the CI panels'
+    # own axis labels (ps.LABEL_FONTSIZE), no bold.
+    ax_b.set_xlabel("Measured synthesizability", fontsize=ps.LABEL_FONTSIZE)
+    ax_b.set_ylabel("Predicted synthesizability", fontsize=ps.LABEL_FONTSIZE)
 
-    # Panel letters aligned on one left margin even though (a)'s and (b)'s
-    # axes start at different x (their y tick labels differ in width): blend
-    # the transform, taking x from the FIGURE and y from each block's own top
-    # axes. in_layout=False because the letter sits outside its axes, and a
-    # reserved-for decoration there would push the whole block inward.
-    for ax, letter in ((axes_a[0], "(a)"), (axes_b[0], "(b)")):
-        trans = mtransforms.blended_transform_factory(fig.transFigure, ax.transAxes)
-        # Lifted a few points clear of the axes: in (b) the topmost y tick
-        # label sits exactly at the axes top, and a letter on that line runs
-        # into it. The offset puts both letters on their block's title line.
-        trans = mtransforms.offset_copy(trans, fig=fig, y=6, units="points")
-        ax.text(0.008, 1.0, letter, transform=trans, fontsize=ps.PANEL_LABEL_FONTSIZE,
+    # `width_b` above is a guessed reserve for (b)'s own y tick labels and
+    # y-axis label; box_aspect(1) sizes (b) by height_a rather than by that
+    # guess, so it's rarely exact. With wspace=0 above, whatever's left of the
+    # guess is the entire visible gap to (a) -- measure (b)'s actual rendered
+    # left edge and hand the difference to (a) instead of leaving it as a gap.
+    fig.canvas.draw()
+    left_in = ax_b.get_tightbbox(fig.canvas.get_renderer()) \
+                  .transformed(fig.dpi_scale_trans.inverted()).x0
+    width_b_actual = fig_width_in - left_in
+    if width_b_actual < width_b - 0.01:
+        gs.set_width_ratios([fig_width_in - width_b_actual, width_b_actual])
+
+    # Side by side now, so each letter sits above its own axes -- no shared
+    # left margin to align across blocks the way a stacked layout needed.
+    # Each x is pushed out to that panel's own outer left edge rather than
+    # the bare plot edge (axes fraction 0): (a) only has to clear its y tick
+    # labels ("GNN"/"MLP"/"XGB"), while (b) also carries a rotated y-axis
+    # label further out, so it needs a larger left offset than (a).
+    panel_label_x = {"a": -0.15, "b": -0.25}
+    for ax, letter, key in ((axes_a[0], "(a)", "a"), (ax_b, "(b)", "b")):
+        trans = mtransforms.offset_copy(ax.transAxes, fig=fig, y=4.5, units="points")
+        ax.text(panel_label_x[key], 1.0, letter, transform=trans, fontsize=ps.PANEL_LABEL_FONTSIZE,
                 fontweight="bold", va="bottom", ha="left", clip_on=False,
                 in_layout=False)
 
@@ -730,22 +794,22 @@ def main() -> None:
     if counts.nunique() != 1:
         print("WARNING: unbalanced folds — the ANOVA needs equal counts per model.")
 
-    plot_cv_boxplots(fold_scores)
-    make_simultaneous_ci_plot(df_cv, prefix="reg_", metrics=["r2", "rmse", "mae", "spearman_rho"])
-    make_simultaneous_ci_plot(df_cv, prefix="clf_", metrics=["clf_roc_auc", "clf_pr_auc", "clf_mcc", "clf_recall"])
+    # plot_cv_boxplots(fold_scores)
+    # make_simultaneous_ci_plot(df_cv, prefix="reg_", metrics=["r2", "rmse", "mae", "spearman_rho"])
+    # make_simultaneous_ci_plot(df_cv, prefix="clf_", metrics=["clf_roc_auc", "clf_pr_auc", "clf_mcc", "clf_recall"])
 
-    test_pred_path, test_metrics_path = res / "test_predictions.pkl", res / "test_metrics.csv"
-    if test_pred_path.exists() and test_metrics_path.exists():
-        with open(test_pred_path, "rb") as f:
-            predictions = pickle.load(f)
-        metrics_df = pd.read_csv(test_metrics_path, index_col=0)
-        plot_test_scatter(predictions, metrics_df)
-    else:
-        print("No test_predictions.pkl/test_metrics.csv in --results -- "
-              "skipping test-set scatter plots (run evaluation.py with --test-csv first).")
+    # test_pred_path, test_metrics_path = res / "test_predictions.pkl", res / "test_metrics.csv"
+    # if test_pred_path.exists() and test_metrics_path.exists():
+    #     with open(test_pred_path, "rb") as f:
+    #         predictions = pickle.load(f)
+    #     metrics_df = pd.read_csv(test_metrics_path, index_col=0)
+    #     plot_test_scatter(predictions, metrics_df)
+    # else:
+    #     print("No test_predictions.pkl/test_metrics.csv in --results -- "
+    #           "skipping test-set scatter plots (run evaluation.py with --test-csv first).")
 
-    plot_ensemble_strategies(res)
-    plot_ensemble_scatter(res)
+    # plot_ensemble_strategies(res)
+    # plot_ensemble_scatter(res)
     make_fig3(df_cv, res)
 
 
