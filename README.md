@@ -514,8 +514,11 @@ apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/scoring.sif \
 ## Plotting
 
 ```bash
-# Synthesizability scores correlation
-# --method spearman|pearson|kendall] [--columns ...] [
+# Butina clustering
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/dataset/plot_butina_clustering.py \
+    data/sets/adaptive_cluster_metrics.csv \
+    --output-dir figures/butina/
 
 # Correlation matrix only for structural information
 apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
@@ -539,24 +542,35 @@ apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
     --columns synthesizability sa_score sc_score ra_score syba_score gasa_pred fs_score \
     --prefix corr_mol_scores
 
-# Figure 2a
+# Figure 1: Visualize tree routes
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/dataset/sample_route_tree.py data/routes/routes.csv \
+    --output-dir figures/routes/route_trees --seed 0
+
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/dataset/sample_route_tree.py data/routes/routes.csv \
+    --output-dir figures/routes/route_trees --seed 1234 --n-examples 20
+
+for i in {50..60}; do
+  apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+    python scripts/dataset/sample_route_tree.py data/routes/routes.csv \
+      --output-dir figures/routes/route_trees --seed $i
+done
+
+# Figure X: Correlation matrix and development vs. held-out distributions
 apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
   python scripts/dataset/plot_fig2.py \
     data/retro_scoring/routes_mol_synth_scored.csv \
     data/sets/routes_train_val.csv data/sets/routes_test.csv \
-    figures/
+    figures/correlation_vs_distributions/
 
-# Figure 2: Correlation matrix and development vs. held-out distributions
+# Figure Y: Models comparison: Tukey HSD and scatter plots
 apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
-  python scripts/dataset/plot_fig2.py \
-    data/retro_scoring/routes_mol_synth_scored.csv \
-    data/sets/routes_train_val.csv data/sets/routes_test.csv \
-    figures/
+  python scripts/models/plotting_evaluation.py \
+    --results outputs/results/results_20260828_182305 \
+    --out-dir figures/performance/
 
-# Figure 3: Models comparison: Tukey HSD and scatter plots
-apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
-  python scripts/models/plotting_evaluation.py --results outputs/results/results_20260828_182305
-
+# Figure Z: Plot predictions of negative data
 apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
     python scripts/negative_data/plot_negative_data.py \
       --output-dir figures/
@@ -564,4 +578,29 @@ apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
 # Plot CV fold distributions
 apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
     python scripts/models/plotting_folds.py --input data/sets/routes_train_val.csv
+
+# ------------------------------------------------------------------------------
+# Appendix
+# ------------------------------------------------------------------------------
+# Data distributions: Butina cutoff sweep table + recomputed CV fold statistics
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/plotting_appendix/data_distributions.py
+
+# Score-component ablation: re-derives the shipped score, tests weight/term variants
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/plotting_appendix/score_components.py
+
+# HPO details: search-space budget, convergence, selected hyperparameters per fold
+# Bind-mount the live repo and run everything inside the training container
+BIND="$(bash apptainer/bind_live_repo.sh)"
+apptainer exec $BIND apptainer/training.sif bash -c \
+  "cd /opt/repo && PYTHONPATH=scripts/plotting_appendix python scripts/plotting_appendix/hpo_details.py"
+
+# Normality diagnostics: Q-Q plots, Shapiro-Wilk, Levene's test behind the AutoRank comparison
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/plotting_appendix/normality_diagnostics.py
+
+# Remaining performance: every CV/held-out metric not in the main-text tables
+apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
+  python scripts/plotting_appendix/remaining_performance.py
 ```

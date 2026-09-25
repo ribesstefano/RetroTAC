@@ -59,7 +59,7 @@ DEFAULT_HEATMAP_COLUMNS = [
 
 #: Hardcoded publication display names, shared with correlation_analysis.py.
 SCORE_DISPLAY_NAMES: dict = {
-    "synthesizability": "Measured score",
+    "synthesizability": "Route-derived score",
     "sa_score": "SAscore",
     "sc_score": "SCScore",
     "ra_score": "RAscore",
@@ -142,12 +142,12 @@ MASK_UPPER_TRIANGLE = False
 #: coordinates (0 = axes left edge, negative = outside it). Nudge these to
 #: clear each panel's widest y tick label -- (b)'s count ticks are narrower
 #: than (a)'s score names, but its y axis label sits outside them.
-PANEL_LABEL_X = {"a": -0.4, "b": -0.15}
+PANEL_LABEL_X = {"a": -0.45, "b": -0.1505}
 
 #: Panel-label y position, shared, in axes fractions (1 = that axes' top
 #: edge, so >1 sits above it). The two panels are matched to the same height
 #: in `main`, so one shared value puts both labels on the same line.
-PANEL_LABEL_Y = 1.08
+PANEL_LABEL_Y = 1.09
 
 
 def display_name(column: str) -> str:
@@ -168,7 +168,7 @@ def display_name(column: str) -> str:
 #: full, unlike a heatmap tick label sharing space with 6 others. Falls back
 #: to `display_name()` for any --target-col not listed here.
 HISTOGRAM_XLABEL: dict = {
-    "synthesizability": "Measured synthesizability score",
+    "synthesizability": "Route-derived score",
 }
 
 
