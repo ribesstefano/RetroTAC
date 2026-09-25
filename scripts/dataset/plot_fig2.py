@@ -59,7 +59,7 @@ DEFAULT_HEATMAP_COLUMNS = [
 
 #: Hardcoded publication display names, shared with correlation_analysis.py.
 SCORE_DISPLAY_NAMES: dict = {
-    "synthesizability": "Our score",
+    "synthesizability": "Route-derived score",
     "sa_score": "SAscore",
     "sc_score": "SCScore",
     "ra_score": "RAscore",
@@ -85,12 +85,15 @@ CORRELATION_CMAP = mcolors.LinearSegmentedColormap.from_list(
 # and `PANEL_A_CELL_IN` keeps its cell just wide enough to match, so the
 # heatmap fills its row rather than floating in it.
 
-#: Figure width, in inches: the document's own ``\linewidth`` (see
-#: `pubstyle.TEXT_WIDTH_PT`). Do not raise this to buy the heatmap more room --
-#: the figure is imported at ``width=1\linewidth``, so a wider canvas is
-#: scaled back down on import and every font in it shrinks to match. Give the
-#: panels more room by rebalancing the split below, or more height.
-FIG_WIDTH_IN = ps.set_size()[0]
+#: Figure width, in inches. Deliberately wider than the document's own
+#: ``\linewidth`` (`pubstyle.TEXT_WIDTH_PT`, 5.5 in) -- panel (a)'s heatmap is
+#: a fixed square (`HEATMAP_SIDE_IN`), so the extra width goes entirely to
+#: panel (b), giving the histogram more room instead of it being cramped
+#: against a 5.5 in canvas. Matches the same wide-figure treatment used for
+#: the model-comparison Fig 3. Needs a wide/spanning placement in the
+#: document (or a two-column figure* environment) rather than a plain
+#: ``\includegraphics[width=\linewidth]``.
+FIG_WIDTH_IN = 7.0
 
 #: Side length, in inches, of panel (a)'s square heatmap. This drives the
 #: figure height; panel (b) is then matched to the same height in `main`.
@@ -103,18 +106,18 @@ HEATMAP_SIDE_IN = 2.10
 #: gets the remainder. Keep this close to what (a) actually occupies -- the
 #: figure is no longer saved with a tight bbox, so slack inside a cell stays
 #: in the file as white space instead of being cropped away.
-PANEL_A_CELL_IN = 2.62
+PANEL_A_CELL_IN = 2.50
 
 #: Gap between the two panels, as a fraction of the mean axes width
 #: (GridSpec's `wspace`). It comes straight out of the panels' own width, so
 #: keep it small -- (b)'s own tick and axis labels already separate the two.
-PANEL_WSPACE = 0.02
+PANEL_WSPACE = 0.05
 
 #: Figure height beyond panel (a)'s square axes, in inches: room for the
 #: rotated x tick labels, panel (b)'s x label, and the panel letters above.
 #: This is the vertical white space -- too large and the panels float in an
 #: over-tall canvas, too small and the square heatmap shrinks to make room.
-FIG_VERTICAL_PAD_IN = 0.78
+FIG_VERTICAL_PAD_IN = 0.62
 
 #: In-cell annotation size for the heatmap, in points. Shared with every other
 #: figure's in-plot annotation text so they match on the page.
@@ -139,12 +142,12 @@ MASK_UPPER_TRIANGLE = False
 #: coordinates (0 = axes left edge, negative = outside it). Nudge these to
 #: clear each panel's widest y tick label -- (b)'s count ticks are narrower
 #: than (a)'s score names, but its y axis label sits outside them.
-PANEL_LABEL_X = {"a": -0.25, "b": -0.20}
+PANEL_LABEL_X = {"a": -0.45, "b": -0.1505}
 
 #: Panel-label y position, shared, in axes fractions (1 = that axes' top
 #: edge, so >1 sits above it). The two panels are matched to the same height
 #: in `main`, so one shared value puts both labels on the same line.
-PANEL_LABEL_Y = 1.13
+PANEL_LABEL_Y = 1.09
 
 
 def display_name(column: str) -> str:
@@ -165,7 +168,7 @@ def display_name(column: str) -> str:
 #: full, unlike a heatmap tick label sharing space with 6 others. Falls back
 #: to `display_name()` for any --target-col not listed here.
 HISTOGRAM_XLABEL: dict = {
-    "synthesizability": "Our synthesizability score",
+    "synthesizability": "Route-derived score",
 }
 
 
@@ -277,17 +280,20 @@ def draw_split_distribution(
     blue, orange = ps.CONTRAST_LIGHT
     heights_tv, _, _ = ax.hist(
         train_val, bins=bins, density=density, color=blue, edgecolor="white",
-        linewidth=0.3, alpha=0.65, label="Train/Val", zorder=2,
+        linewidth=0.3, alpha=0.65, label="Development set", zorder=2,
     )
     heights_te, _, _ = ax.hist(
         test, bins=bins, density=density, color=orange, edgecolor="white",
-        linewidth=0.3, alpha=0.65, label="Held-out test", zorder=3,
+        linewidth=0.3, alpha=0.9, label="Held-out test set", zorder=3,
     )
     ax.set_xlabel(histogram_xlabel(target_col))
     ax.set_ylabel("Density" if density else "Count")
     # Headroom so the legend clears the tallest bar instead of sitting on it.
     ax.set_ylim(0, max(heights_tv.max(), heights_te.max()) * 1.18)
-    ax.legend()
+    # Extra borderaxespad: at the default pad, the legend's left edge crowds
+    # the y-axis's own top tick label ("2500"), which sits just outside the
+    # axes at that same corner.
+    ax.legend(loc="upper left", borderaxespad=1.2)
 
 
 def panel_label(ax: plt.Axes, text: str, x: float, y: float) -> None:

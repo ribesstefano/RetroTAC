@@ -50,7 +50,9 @@ def plot_score_panel(
     uncertain: pd.Series,
     bins: np.ndarray,
     xlim: tuple[float, float],
+    ylim: tuple[float, float],
     xlabel: str,
+    panel_label: str,
     show_ylabel: bool = True,
 ) -> None:
     """Draw overlaid confident/uncertain histograms of synthesizability on one axes.
@@ -67,8 +69,10 @@ def plot_score_panel(
         uncertain: Scores from the uncertain pool.
         bins: Shared bin edges, so the two panels stay comparable.
         xlim: Domain the KDE curves are evaluated over.
+        ylim: Shared y-axis range, so bar heights compare directly across panels.
         xlabel: x-axis label for this panel (carries the low/high distinction
             since the figure has no title).
+        panel_label: Bold `a)`/`b)` label drawn outside the panel's top-left corner.
         show_ylabel: Whether to draw the "Count" y-axis label on this panel.
     """
     bin_width = bins[1] - bins[0]
@@ -85,8 +89,11 @@ def plot_score_panel(
                      linewidth=2, zorder=5)
         ax.axvline(values.mean(), color=ps.darken(color), linestyle="--",
                    linewidth=1, alpha=0.9, zorder=6)
+    ax.set_ylim(ylim)
     ax.set_xlabel(xlabel)
     ax.set_ylabel("Count" if show_ylabel else "")
+    ax.text(-0.18, 1.1, panel_label, transform=ax.transAxes, fontweight="bold",
+            fontsize=ps.LABEL_FONTSIZE, va="top", ha="left", clip_on=False)
     ax.grid(False)
 
 
@@ -107,25 +114,26 @@ def make_figure(
         n_bins: Number of bins spanning [0, 1], shared by both panels.
 
     Returns:
-        The assembled figure, with one shared legend and no title.
+        The assembled figure, with panel labels a)/b), an inline legend, and no title.
     """
     ps.apply_style()
     xlim = (0.0, 1.0)
+    ylim = (0.0, 220.0)
     bins = np.linspace(*xlim, n_bins + 1)
 
-    # subplots=(1, 1.4) rather than the actual (1, 2) grid: set_size scales height
-    # by nrows/ncols, and dividing by the true 2 columns flattens the figure to
-    # ~1.7in tall -- too short for the bold axis labels and legend strip to read
-    # at proportion. 1.4 lands between that and a full golden-ratio cell (3.4in),
-    # wider/flatter as requested while still using the helper rather than a
-    # by-eye figsize.
-    fig, axes = plt.subplots(1, 2, figsize=ps.set_size(subplots=(1, 1.4)), layout="constrained")
-    plot_score_panel(axes[0], confident_low, uncertain_low, bins, xlim, "Synthesizability (low-score pool)")
-    plot_score_panel(axes[1], confident_high, uncertain_high, bins, xlim, "Synthesizability (high-score pool)",
-                      show_ylabel=False)
+    # subplots=(1, 1.8) rather than the actual (1, 2) grid: set_size scales height
+    # by nrows/ncols, so a wider divisor than the true column count flattens each
+    # panel further, spreading the bars over more horizontal pixels -- easier to
+    # read differences between the two hues -- while the inline legend (no more
+    # reserved bottom strip) leaves room for the shorter height.
+    fig, axes = plt.subplots(1, 2, figsize=ps.set_size(subplots=(1, 1.8)), layout="constrained")
+    plot_score_panel(axes[0], confident_low, uncertain_low, bins, xlim, ylim,
+                      "Synthesizability (low-score pool)", "(a)")
+    plot_score_panel(axes[1], confident_high, uncertain_high, bins, xlim, ylim,
+                      "Synthesizability (high-score pool)", "(b)", show_ylabel=True)
 
-    handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="outside lower center", ncol=2)
+    axes[0].legend(loc="upper right")
+    axes[1].legend(loc="upper left")
     return fig
 
 

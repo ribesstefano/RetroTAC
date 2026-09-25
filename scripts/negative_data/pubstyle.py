@@ -125,7 +125,6 @@ RC_PARAMS: dict[str, Any] = {
     "font.size": TICK_FONTSIZE,
     "axes.titlesize": TITLE_FONTSIZE,
     "axes.labelsize": LABEL_FONTSIZE,
-    "axes.labelweight": "bold",
     "xtick.labelsize": TICK_FONTSIZE,
     "ytick.labelsize": TICK_FONTSIZE,
     "legend.fontsize": LEGEND_FONTSIZE,
