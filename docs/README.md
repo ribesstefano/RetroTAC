@@ -170,6 +170,15 @@ The combination warhead&e3's near-zero $\eta^2$ is itself informative: it says t
 
 ### Training
 
+See below for a visualization of the training pipeline.
+
+The GNN backend needs the pretrained Chemeleon weights, downloaded once into `data/external/`
+(gitignored) and pointed to by `gnn.chemeleon_weights` in `config/models_config_routes.yaml`:
+
+```bash
+wget -P data/external https://zenodo.org/records/15460715/files/chemeleon_mp.pt
+```
+
 Precompute the feature cache for all models (XGB, MLP) before training — a one-time step that runs on a login node (no GPU needed) and stores the cache in `outputs/feature_cache_routes`.
 
 ```bash
@@ -538,4 +547,114 @@ apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
 # Remaining performance: every CV/held-out metric not in the main-text tables
 apptainer exec $(bash apptainer/bind_live_repo.sh) apptainer/training.sif \
   python scripts/plotting_appendix/remaining_performance.py
+```
+
+## Training Pipeline Visualization
+
+### Cross-validation scheme
+
+Training uses **5x5 warhead scaffold-grouped cross-validation**: 5 outer seeds
+(`cross_validation.seeds` in `config/models_config.yaml`) x5 outer folds
+(`cross_validation.n_folds`) = 25 independent `(seed, fold_idx)` fits. Grouping by warhead Bemis–Murcko scaffold guarantees no scaffold spans a train/val boundary, at either nesting level.
+
+#### Pipeline
+
+```mermaid
+flowchart TD
+    IN["Input CSV<br/>(SMILES + target column)"] --> PRE["--precompute<br/>standardize SMILES once,<br/>cache Morgan FP + RDKit descriptors<br/>outputs/feature_cache/*.npz"]
+    PRE --> LOOP["25 x (seed, fold_idx) runs<br/>5 seeds x 5 folds, one SLURM<br/>array task each"]
+
+    subgraph ONEFOLD["run_single_fold(seed, fold_idx)"]
+        direction TB
+        S1["get_fold_indices()<br/>scaffold-grouped outer split"] --> S2["tune_inner_fold()<br/>Optuna TPE search, MINIMISING<br/>alpha*RMSE + (1-alpha)*(1-rho)/2<br/>on inner-val"]
+        S2 --> S3["Refit best params<br/>on full outer-train"]
+        S3 --> S4["Score refit model on outer-val:<br/>regression metrics + binary<br/>metrics @ classification_threshold"]
+        S4 --> S5["Persist score_seed(S)_fold(F).json,<br/>model_seed(S)_fold(F),<br/>trials_seed(S)_fold(F).csv,<br/>best_params_seed(S)_fold(F).json"]
+    end
+
+    LOOP --> ONEFOLD
+    ONEFOLD -->|repeat for all 25 seed/fold pairs| AGG["--aggregate<br/>once all 25 score JSONs exist"]
+    AGG --> MEAN["mean +/- std of EVERY metric<br/>over 25 outer-val folds"]
+    AGG --> PICK["pick hyperparams with best<br/>best_objective_inner (never outer)"]
+    PICK --> REFIT["Refit final model<br/>on the FULL dataset"]
+    REFIT --> OUT["outputs/models/model_prefix/<br/>model_prefix_final<br/>+ model_prefix_hparams.yaml<br/>+ model_prefix_cv_metrics.csv"]
+```
+
+#### Fold schematic — outer rotation
+
+For one outer seed, scaffolds are shuffled with a seeded RNG then greedily
+balanced into 5 groups `G0..G4`; each `fold_idx` in turn holds out a different
+group as outer-val. All 5 seeds repeat this with an independent shuffle, giving
+25 total outer-val evaluations.
+
+```mermaid
+flowchart TB
+    classDef val fill:#f28e8e,stroke:#333,color:#000;
+    classDef train fill:#8ecae6,stroke:#333,color:#000;
+
+    subgraph SEED["one outer seed: shuffle scaffolds, balance into G0..G4"]
+        direction LR
+        subgraph FI0["fold_idx = 0"]
+            direction TB
+            A0[G0]:::val
+            A1[G1]:::train
+            A2[G2]:::train
+            A3[G3]:::train
+            A4[G4]:::train
+        end
+        subgraph FI1["fold_idx = 1"]
+            direction TB
+            B0[G0]:::train
+            B1[G1]:::val
+            B2[G2]:::train
+            B3[G3]:::train
+            B4[G4]:::train
+        end
+        subgraph FI2["fold_idx = 2"]
+            direction TB
+            C0[G0]:::train
+            C1[G1]:::train
+            C2[G2]:::val
+            C3[G3]:::train
+            C4[G4]:::train
+        end
+        subgraph FI3["fold_idx = 3"]
+            direction TB
+            D0[G0]:::train
+            D1[G1]:::train
+            D2[G2]:::train
+            D3[G3]:::val
+            D4[G4]:::train
+        end
+        subgraph FI4["fold_idx = 4"]
+            direction TB
+            E0[G0]:::train
+            E1[G1]:::train
+            E2[G2]:::train
+            E3[G3]:::train
+            E4[G4]:::val
+        end
+    end
+```
+
+#### Fold schematic — inner split (per outer fold)
+
+The outer-train from the rotation above (4 of the 5 groups) is shuffled *again*
+with an independent seed and split ~80/20 by scaffold
+into inner-train/inner-val, used only by Optuna. The held-out outer-val group is
+never touched during tuning — it only re-enters at the final scoring step.
+
+```mermaid
+flowchart LR
+    OT["Outer-train<br/>4 of 5 scaffold groups"] --> SH2["Shuffle scaffolds again<br/>seed + fold_idx + 1000"]
+    SH2 --> SPLIT["Greedily balance ~80/20 by scaffold"]
+    SPLIT --> ITR["Inner-train (~80%)"]
+    SPLIT --> IVAL["Inner-val (~20%)"]
+    ITR --> OPT["Optuna study<br/>TPE sampler + MedianPruner<br/>n_trials trials"]
+    IVAL --> OPT
+    OPT --> BEST["best_params<br/>+ best_objective_inner"]
+    BEST --> REFIT2["Refit on full outer-train"]
+    OV["Outer-val<br/>held-out scaffold group"] --> SCORE["Evaluate refit model"]
+    REFIT2 --> SCORE
+    SCORE --> R2OUT["all metrics -> score_seed(S)_fold(F).json"]
 ```
