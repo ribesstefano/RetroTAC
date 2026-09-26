@@ -20,6 +20,16 @@ molecule at that scale, since anything that doesn't fit is silently clipped
 by RDKit; the script checks each render for content touching the canvas edge
 and warns when that happens, as a sign --size is too small for --bond-length.
 
+--trim sidesteps that tradeoff entirely via RDKit's "flexicanvas" mode
+(MolDraw2DCairo(-1, -1)): instead of a shared --size canvas, each molecule
+gets its own canvas auto-sized to fit its depiction at the --bond-length
+scale plus a small proportional margin, so images vary in pixel dimensions
+(a small building block stays small) but never clip and never need --size
+guessed. Needs --transparent (there's no canvas margin to eliminate
+otherwise) and --bond-length (otherwise every molecule would auto-fit its
+own canvas at its own scale, defeating the point of a shared chemical
+scale); --size is ignored in this mode.
+
 Usage
 -----
     python scripts/dataset/plot_route_molecules.py \\
@@ -52,6 +62,12 @@ Arguments:
     --dpi          DPI recorded on the PDF page (default: 300); this only
                    sets the PDF's physical page size, not the pixel
                    dimensions.
+    --transparent  Alpha-transparent PNG canvas instead of opaque white
+                   (e.g. for importing into draw.io). Ignored by --svg
+                   (already transparent) and --pdf (no alpha channel).
+    --trim         Auto-size each canvas to its own content instead of a
+                   shared --size canvas (RDKit's flexicanvas mode). Requires
+                   --transparent and --bond-length; --size is ignored.
 """
 
 import argparse
@@ -99,36 +115,67 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--pdf", action="store_true", help="Also save each molecule as PDF.")
     p.add_argument("--svg", action="store_true", help="Also save each molecule as SVG.")
     p.add_argument("--dpi", type=int, default=300, help="DPI recorded on the PDF page (default: 300).")
-    return p.parse_args()
+    p.add_argument(
+        "--transparent",
+        action="store_true",
+        help="Skip painting a background so the PNG has an alpha-transparent canvas instead of opaque white "
+        "(e.g. for importing into draw.io). Ignored by --svg, which is already transparent, and by --pdf, "
+        "whose PDF/raster format has no alpha channel.",
+    )
+    p.add_argument(
+        "--trim",
+        action="store_true",
+        help="Auto-size each canvas to its own content (RDKit flexicanvas) instead of a shared --size canvas, "
+        "so every image is tightly cropped with no whitespace/transparent margin -- e.g. for importing into "
+        "draw.io. Requires --transparent and --bond-length; --size is ignored in this mode.",
+    )
+    args = p.parse_args()
+    if args.trim and not args.transparent:
+        p.error("--trim requires --transparent (there's no canvas margin to eliminate otherwise).")
+    if args.trim and args.bond_length is None:
+        p.error("--trim requires --bond-length (otherwise every molecule auto-fits its own canvas at its own "
+                 "scale, defeating the point of a shared chemical scale).")
+    return args
 
 
-def render_png_bytes(mol, size: int, bond_length: Optional[int] = None) -> bytes:
-    """Draw *mol* as PNG bytes on a fixed size x size canvas.
+def render_png_bytes(mol, size: Optional[int], bond_length: Optional[int] = None, transparent: bool = False) -> bytes:
+    """Draw *mol* as PNG bytes on a size x size canvas, or an auto-sized one.
 
     Args:
         mol: A valid (non-None) RDKit molecule.
-        size: Canvas width and height, in pixels.
+        size: Canvas width and height, in pixels. None switches to RDKit's
+            flexicanvas mode (MolDraw2DCairo(-1, -1)): the canvas is
+            auto-sized to fit this molecule's own depiction, so it never
+            clips and never needs guessing -- typically combined with
+            bond_length so every such auto-sized canvas still shares the
+            same chemical scale.
         bond_length: If given, fix the drawn bond length to this many pixels
             (same chemical scale for every molecule) instead of auto-fitting
             the depiction to the canvas.
+        transparent: If True, don't paint a background, so the canvas stays
+            alpha-transparent instead of opaque white.
 
     Returns:
         Raw PNG bytes.
     """
-    drawer = rdMolDraw2D.MolDraw2DCairo(size, size)
+    canvas = size if size is not None else -1
+    drawer = rdMolDraw2D.MolDraw2DCairo(canvas, canvas)
     if bond_length is not None:
         drawer.drawOptions().fixedBondLength = bond_length
+    if transparent:
+        drawer.drawOptions().clearBackground = False
     rdMolDraw2D.PrepareAndDrawMolecule(drawer, mol)
     drawer.FinishDrawing()
     return drawer.GetDrawingText()
 
 
-def render_svg_text(mol, size: int, bond_length: Optional[int] = None) -> str:
-    """Draw *mol* as SVG markup on a fixed size x size canvas.
+def render_svg_text(mol, size: Optional[int], bond_length: Optional[int] = None) -> str:
+    """Draw *mol* as SVG markup on a size x size canvas, or an auto-sized one.
 
     Args:
         mol: A valid (non-None) RDKit molecule.
-        size: Canvas width and height, in pixels.
+        size: Canvas width and height, in pixels. None switches to RDKit's
+            flexicanvas mode (MolDraw2DSVG(-1, -1)); see render_png_bytes.
         bond_length: If given, fix the drawn bond length to this many pixels
             (same chemical scale for every molecule) instead of auto-fitting
             the depiction to the canvas.
@@ -136,7 +183,8 @@ def render_svg_text(mol, size: int, bond_length: Optional[int] = None) -> str:
     Returns:
         SVG markup text.
     """
-    drawer = rdMolDraw2D.MolDraw2DSVG(size, size)
+    canvas = size if size is not None else -1
+    drawer = rdMolDraw2D.MolDraw2DSVG(canvas, canvas)
     if bond_length is not None:
         drawer.drawOptions().fixedBondLength = bond_length
     rdMolDraw2D.PrepareAndDrawMolecule(drawer, mol)
@@ -144,8 +192,8 @@ def render_svg_text(mol, size: int, bond_length: Optional[int] = None) -> str:
     return drawer.GetDrawingText()
 
 
-def touches_canvas_edge(png_bytes: bytes, margin: int = 1) -> bool:
-    """Check whether drawn (non-white) content reaches the canvas border.
+def touches_canvas_edge(png_bytes: bytes, margin: int = 1, transparent: bool = False) -> bool:
+    """Check whether drawn content reaches the canvas border.
 
     Used as a clipping heuristic for --bond-length renders: content flush
     against the edge means the molecule didn't fully fit in --size at that
@@ -154,10 +202,19 @@ def touches_canvas_edge(png_bytes: bytes, margin: int = 1) -> bool:
     Args:
         png_bytes: Raw PNG bytes from :func:`render_png_bytes`.
         margin: Border thickness, in pixels, to inspect.
+        transparent: If True, the canvas has no painted background, so
+            "empty" border pixels are transparent (alpha ~0) rather than
+            (near-)white -- check the alpha channel instead of RGB.
 
     Returns:
-        True if any border pixel is not (near-)white.
+        True if any border pixel holds drawn content.
     """
+    if transparent:
+        alpha = np.array(Image.open(io.BytesIO(png_bytes)).convert("RGBA"))[..., 3]
+        border = np.concatenate(
+            [alpha[:margin].reshape(-1), alpha[-margin:].reshape(-1), alpha[:, :margin].reshape(-1), alpha[:, -margin:].reshape(-1)]
+        )
+        return bool(np.any(border > 5))
     arr = np.array(Image.open(io.BytesIO(png_bytes)).convert("RGB"))
     border = np.concatenate(
         [arr[:margin].reshape(-1, 3), arr[-margin:].reshape(-1, 3), arr[:, :margin].reshape(-1, 3), arr[:, -margin:].reshape(-1, 3)]
@@ -186,9 +243,10 @@ def main() -> None:
             print(f"Skipping row {idx} ({role}): unparseable SMILES '{smi}'")
             continue
 
+        size = None if args.trim else args.size
         stem = f"{idx:02d}_{role}"
-        png_bytes = render_png_bytes(mol, args.size, args.bond_length)
-        if args.bond_length is not None and touches_canvas_edge(png_bytes):
+        png_bytes = render_png_bytes(mol, size, args.bond_length, args.transparent)
+        if not args.trim and args.bond_length is not None and touches_canvas_edge(png_bytes, transparent=args.transparent):
             print(
                 f"Warning: row {idx} ({role}) touches the canvas edge at --size {args.size} with "
                 f"--bond-length {args.bond_length}; it may be clipped -- consider increasing --size."
@@ -196,7 +254,7 @@ def main() -> None:
         (out_dir / f"{stem}.png").write_bytes(png_bytes)
 
         if args.svg:
-            (out_dir / f"{stem}.svg").write_text(render_svg_text(mol, args.size, args.bond_length))
+            (out_dir / f"{stem}.svg").write_text(render_svg_text(mol, size, args.bond_length))
 
         if args.pdf:
             img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
@@ -204,7 +262,8 @@ def main() -> None:
 
         n_written += 1
 
-    print(f"Wrote {n_written} molecule image(s) ({args.size}x{args.size}px) → {out_dir}")
+    size_desc = "auto-sized per molecule" if args.trim else f"{args.size}x{args.size}px"
+    print(f"Wrote {n_written} molecule image(s) ({size_desc}) → {out_dir}")
 
 
 if __name__ == "__main__":
