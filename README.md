@@ -1,11 +1,9 @@
-<!-- We will add emojis to the sections titles -->
 # RetroTAC: Learning Route-Derived Synthetic Accessibility for PROTACs
 
 RetroTAC predicts the synthesizability of a PROTAC directly from its SMILES string, without
 calling a retrosynthesis planner at inference time.
 
-<!-- Add an emoji to the Overview title -->
-## Overview 
+## 🔭 Overview
 
 PROTACs are large by construction — a target-binding warhead and an E3-ligase ligand joined by a
 linker — so whole-molecule accessibility scores tend to read their size as difficulty, while
@@ -28,7 +26,7 @@ The repository holds two separately installed Python projects:
   used as comparison baselines, not as training targets, and needs its own environment (see
   [retro_scores/README.md](retro_scores/README.md)).
 
-## Reproducibility
+## 🔁 Reproducibility
 
 Every number, table, and figure in the paper is reproducible from this repository plus the
 archives under [release/](release/), built by
@@ -50,7 +48,7 @@ The [reproducibility guide](docs/README.md) then walks the full pipeline end to 
 molecule scoring, deduplication, scaffold-leakage analysis, cross-validated training, ensemble
 selection, the DeepPSA comparison, and every figure — with the command for each step.
 
-## Installation
+## ⚙️ Installation
 
 RetroTAC targets Python 3.12 and manages dependencies with [uv](https://docs.astral.sh/uv/):
 
@@ -69,7 +67,7 @@ Where `uv sync` is impractical — for example, a shared cluster with a file-cou
 Apptainer containers cover the same profiles; see [apptainer/README.md](apptainer/README.md).
 Full environment and cluster-specific notes live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Quickstart
+## 🚀 Quickstart
 
 The released archives carry the final GNN refit, the strongest single model in the paper (held-out
 R² 0.615, RMSE 0.140). Unpack the checkpoint as described under
@@ -118,7 +116,8 @@ python scripts/models/push_to_hf.py \
     --cv-dir outputs/cv --local-dir retrotac_ensemble
 ```
 
-> **Note.** The ensemble members are the per-fold models under `outputs/cv/`, which the released
+> [!NOTE]
+> The ensemble members are the per-fold models under `outputs/cv/`, which the released
 > archives omit — the 27 selected members alone come to 1.4 GiB, dominated by 13 GNN checkpoints.
 > Running the ensemble therefore means training the cross-validation models first, following
 > [Training](docs/README.md#training). The trained ensemble will also be published to the Hugging
@@ -128,7 +127,7 @@ python scripts/models/push_to_hf.py \
 Also pass `n_jobs=-1` to parallelize featurization across members, and `load_strategy="lazy"` to
 load members on demand instead of all at once.
 
-## Notes on Implementation
+## 📝 Notes on Implementation
 
 Predictions are not clipped to [0, 1]. A value outside that range is a signal rather than a bug:
 it means the molecule differs substantially from the training distribution.
@@ -139,7 +138,7 @@ genuine difficulty or merely a timeout or depth limit. Treat the continuous scor
 as the primary output; the 0.7 threshold used for the classification metrics is a reporting
 convention, not a calibrated decision boundary.
 
-## Documentation
+## 📚 Documentation
 
 - [docs/README.md](docs/README.md) — reproducibility guide
 - [CONTRIBUTING.md](CONTRIBUTING.md) — environment setup, coding standards, and the
@@ -148,6 +147,6 @@ convention, not a calibrated decision boundary.
 - [retro_scores/README.md](retro_scores/README.md) — the scoring package's separate,
   older dependency stack
 
-## License
+## 📄 License
 
 MIT — see [LICENSE](LICENSE).
