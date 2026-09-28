@@ -34,17 +34,17 @@ archives under [release/](release/), built by
 
 | Archive | Size | Contents |
 |---|---|---|
-| `retrotac_results.tar.gz` | 11.7 MiB | Per-fold metrics, Optuna studies, ensemble results, paper figures |
 | `retrotac_data.tar.gz` | 18.8 MiB | Pipeline inputs and every intermediate CSV, including the route-derived labels |
+| `retrotac_results.tar.gz` | 11.7 MiB | Per-fold metrics, Optuna studies, ensemble results, paper figures |
 | `retrotac_checkpoints.tar.gz` | 3.4 MiB | The final XGBoost and MLP refits |
 | `gnn_20260828_182305_final.ckpt.gz` | 90.7 MiB | The final GNN refit |
 
 Start with `retrotac_results.tar.gz`. At under 12 MiB it carries every per-fold metric and Optuna
 study, which is enough to re-derive the reported statistics without retraining anything or
 downloading a single model weight. The four archives together are 124.5 MiB, and hold exactly the
-three refits the paper reports — XGBoost, MLP, and GNN.
+three refits the paper reports (XGBoost, MLP, and GNN).
 
-The [reproducibility guide](docs/README.md) then walks the full pipeline end to end — route and
+The [reproducibility guide (`docs/README.md`)](docs/README.md) then walks the full pipeline end to end — route and
 molecule scoring, deduplication, scaffold-leakage analysis, cross-validated training, ensemble
 selection, the DeepPSA comparison, and every figure — with the command for each step.
 
@@ -70,7 +70,7 @@ Full environment and cluster-specific notes live in [CONTRIBUTING.md](CONTRIBUTI
 ## 🚀 Quickstart
 
 The released archives carry the final GNN refit, the strongest single model in the paper (held-out
-R² 0.615, RMSE 0.140). Unpack the checkpoint as described under
+$R^2$ 0.615, RMSE 0.140). Unpack the checkpoint as described under
 [Artifacts](docs/README.md#artifacts), then score SMILES through the Python API:
 
 ```python
@@ -91,8 +91,8 @@ rather than a handful of molecules.
 
 ### Full ensemble
 
-RetroTAC proper is the Caruana ensemble of 27 cross-validation members — 13 GNN, 7 MLP, 7 XGB —
-which reaches RMSE 0.132 and R² 0.647, ahead of any single model, and reports the spread across
+RetroTAC proper is the Caruana ensemble of 27 cross-validation members (13 GNN, 7 MLP, 7 XGB)
+which reaches RMSE 0.132 and $R^2$ 0.647, ahead of any single model, and reports the spread across
 its members as an uncertainty estimate:
 
 ```python
