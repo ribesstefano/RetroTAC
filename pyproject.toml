@@ -3,7 +3,7 @@ name = "retrotac"
 version = "0.1.0"
 description = "PROTAC synthesizability scoring pipeline"
 readme = "README.md"
-requires-python = ">=3.12.*"
+requires-python = ">=3.12"
 # Core inference dependencies — everything a regular user needs to run the
 # trained models (see scripts/models/predict.py). Heavier or task-specific
 # tooling lives in the optional groups below (install with `uv sync --extra
