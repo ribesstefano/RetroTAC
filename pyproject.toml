@@ -30,7 +30,6 @@ dependencies = [
     "pyyaml>=6.0",
     "dotenv>=0.9.9",
     "huggingface-hub>=0.17",
-    "optuna>=4.2",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +38,7 @@ dependencies = [
 # -> apptainer/training.def
 training = [
     # Experiment tracking & tuning
+    "optuna>=4.2",
     "optuna-integration[pytorch-lightning]>=4.9.0",
     "wandb>=0.27",
     "lightning-utilities>=0.15.3",
@@ -68,7 +68,20 @@ training = [
 # -> apptainer/scoring.def
 scoring = ["dspy>=2.6", "pydantic>=2.0"]
 
+# Test suite for the scoring server and its REINVENT plugin (tests/). The
+# REINVENT-side tests need no REINVENT install -- they import the component
+# through the namespace stub under tests/stub/.
+dev = ["pytest>=8"]
+
 notebooks = ["jupyter>=1.1", "jupyterlab>=4.5", "ipywidgets>=7.8"]
+
+# HTTP scoring server (retrotac/serve/, run with `python -m retrotac.serve`),
+# which exists so a generative loop -- REINVENT4 in particular, see
+# reinvent/README.md -- can score PROTACs without co-installing its pinned
+# torch/rdkit alongside ours. Kept optional so the base install, and the
+# Apptainer inference image, stay fastapi-free; the REINVENT-side client is
+# standard-library-only and adds nothing to REINVENT's own environment.
+serve = ["fastapi>=0.115", "uvicorn>=0.32", "pydantic>=2.0"]
 
 # NOTE: the former `retrosynth` extra (aizynthfinder) has been dropped
 # project-wide. Local AiZynthFinder-based route search
@@ -95,3 +108,11 @@ package = true
 
 [tool.uv.sources]
 protac-splitter = { git = "https://github.com/ribesstefano/PROTAC-Splitter.git", rev = "version-update" }
+
+[tool.pytest.ini_options]
+# The test modules import their shared fixtures as plain `conftest`, which
+# pytest's default (prepend) import mode puts on the path. The REINVENT plugin
+# tree is deliberately *not* on the path: the tests import the component
+# through the two-entry namespace stub under tests/stub/ instead.
+testpaths = ["tests"]
+addopts = "-q"
