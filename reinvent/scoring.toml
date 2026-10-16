@@ -1,0 +1,100 @@
+### REINVENT4 scoring configuration for RetroTAC PROTAC synthesizability.
+###
+### Run it against a live server:
+###
+###   python -m retrotac.serve                      # in the retrotac env
+###   PYTHONPATH=/path/to/RetroTAC/reinvent \
+###       reinvent -l scoring.log scoring.toml      # in the reinvent4 env
+###
+### PYTHONPATH points at the directory *containing* `reinvent_plugins`, i.e.
+### this file's own directory -- not at `reinvent_plugins/components/`.
+###
+### !! UNVERIFIED !! Everything below that REINVENT owns -- `run_type`, the
+### `[[stage]]`/`[scoring]` layout, `transform.*` coefficients, the built-in
+### MolecularWeight/SlogP components -- is written from REINVENT4's
+### documentation and has NOT been run here, since this repository has no
+### REINVENT install. The RetroTAC component block and its `params` keys are
+### the half that is tested (see reinvent/README.md). Check this file against
+### your own REINVENT version before trusting a run's output.
+
+run_type = "scoring"
+device = "cpu"
+json_out_config = "scoring.json"
+
+[parameters]
+smiles_file = "molecules.smi"      # one SMILES per line
+output_csv = "scoring_results.csv"
+
+[scoring]
+# Geometric mean, so a molecule cannot buy a good total by excelling on one
+# component while failing another: an unsynthesizable PROTAC with perfect
+# physchem properties still scores near zero.
+type = "geometric_mean"
+
+[[scoring.component]]
+[scoring.component.RetroTAC]
+
+# The synthesizability prediction itself. This transform is where the
+# objective actually lives: RetroTAC's label runs 0 (the planner never
+# reached purchasable stock within its budget) to 1 (the molecule is itself
+# in stock), and the paper uses 0.7 as a *reporting* convention, not a
+# calibrated decision boundary. The window below treats 0.5 as indifference
+# and 0.85 as good -- PLACEHOLDERS: set them from your project's own
+# thresholds, and note predictions are not clipped to [0, 1], a value outside
+# it meaning the molecule sits far from the training distribution.
+[[scoring.component.RetroTAC.endpoint]]
+name = "RetroTAC synthesizability"
+weight = 1.0
+params.key = "mean"
+params.url = "http://127.0.0.1:8000"
+# params.port_file = "/tmp/retrotac.port"   # instead of a fixed port, pair with `--port 0`
+# params.max_batch = 512                    # molecules per request
+# params.fail_on_error = true               # false: score nan and keep going across a restart
+transform.type = "sigmoid"
+transform.low = 0.5
+transform.high = 0.85
+transform.k = 0.5
+
+# The spread across the ensemble's 27 members, logged at ZERO weight: it does
+# not steer the optimiser, it diagnoses it. Rising uncertainty across a run is
+# the earliest sign the population has drifted out of RetroTAC's training
+# domain, where the mean stops meaning much. Do not give this a positive
+# weight -- rewarding low uncertainty teaches the optimiser to propose
+# molecules near the training set rather than synthesizable ones.
+[[scoring.component.RetroTAC.endpoint]]
+name = "RetroTAC uncertainty (logged only)"
+weight = 0.0
+params.key = "std"
+params.url = "http://127.0.0.1:8000"
+transform.type = "reverse_sigmoid"
+transform.low = 0.02
+transform.high = 0.20
+transform.k = 0.5
+
+# Property bounds matching the chemistry RetroTAC was trained on. Without
+# them a generative run drifts to molecules the model has no basis for
+# scoring: PROTACs are bivalent by construction, so roughly MW 600-1200 and a
+# lipophilicity window either side of it.
+[[scoring.component]]
+[scoring.component.MolecularWeight]
+[[scoring.component.MolecularWeight.endpoint]]
+name = "Molecular weight (PROTAC range)"
+weight = 0.5
+transform.type = "double_sigmoid"
+transform.low = 600.0
+transform.high = 1200.0
+transform.coef_div = 1000.0
+transform.coef_si = 20.0
+transform.coef_se = 20.0
+
+[[scoring.component]]
+[scoring.component.SlogP]
+[[scoring.component.SlogP.endpoint]]
+name = "SlogP"
+weight = 0.5
+transform.type = "double_sigmoid"
+transform.low = 1.0
+transform.high = 7.0
+transform.coef_div = 7.0
+transform.coef_si = 10.0
+transform.coef_se = 10.0

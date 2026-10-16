@@ -50,13 +50,14 @@ selection, the DeepPSA comparison, and every figure — with the command for eac
 
 ## ⚙️ Installation
 
-RetroTAC targets Python 3.12 and manages dependencies with [uv](https://docs.astral.sh/uv/):
+RetroTAC supports Python 3.12+ and manages dependencies with [uv](https://docs.astral.sh/uv/):
 
 ```bash
 pip install uv
 uv sync                     # inference only — covers most users
 uv sync --extra training    # + training, tracking, plotting, PROTAC-Splitter
 uv sync --extra scoring     # + Route scoring
+uv sync --extra serve       # + the HTTP scoring server (see below)
 ```
 
 Route-derived scoring needs only the base environment, since it is pure RDKit. The six molecule
@@ -68,6 +69,11 @@ Apptainer containers cover the same profiles; see [apptainer/README.md](apptaine
 Full environment and cluster-specific notes live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## 🚀 Quickstart
+
+To try the full ensemble in the browser with nothing installed, open
+[`notebooks/retrotac_quickstart.ipynb`](notebooks/retrotac_quickstart.ipynb) in Colab
+([![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ribesstefano/RetroTAC/blob/main/notebooks/retrotac_quickstart.ipynb)):
+it installs RetroTAC, pulls the ensemble from the Hub, and scores the paper's held-out test set.
 
 The released archives carry the final GNN refit, the strongest single model in the paper (held-out
 $R^2$ 0.615, RMSE 0.140). Unpack the checkpoint as described under
@@ -98,7 +104,7 @@ its members as an uncertainty estimate:
 ```python
 from retrotac.models.ensemble import RetroTAC
 
-model = RetroTAC.from_pretrained("retrotac_ensemble", device="cpu")
+model = RetroTAC.from_pretrained("ailab-bio/RetroTAC", device="cpu")
 scores = model.predict(smiles)                      # weighted mean, shape (len(smiles),)
 
 detailed = model.predict(smiles, return_details=True)
@@ -106,9 +112,14 @@ detailed["mean"]                                    # same weighted mean
 detailed["std"]                                     # spread across members, as uncertainty
 ```
 
-`from_pretrained` treats any path that exists on disk as a local model directory, so it needs no
-network access. That directory holds `ensemble.json` plus the members under `members/`, staged
-from a completed cross-validation run:
+The 27 members come to 1.4 GiB, dominated by the 13 GNN checkpoints; `from_pretrained` caches
+them under `~/.cache/huggingface/` on first use. Pass `load_strategy="lazy"` (optionally with
+`max_resident`) to hold only a few members in memory at a time instead of all 27, and
+`n_jobs=-1` to parallelize featurization.
+
+`from_pretrained` also treats any path that exists on disk as a local model directory, so it
+needs no network access. That directory holds `ensemble.json` plus the members under
+`members/`, staged from a completed cross-validation run:
 
 ```bash
 python scripts/models/push_to_hf.py \
@@ -117,15 +128,34 @@ python scripts/models/push_to_hf.py \
 ```
 
 > [!NOTE]
-> The ensemble members are the per-fold models under `outputs/cv/`, which the released
-> archives omit — the 27 selected members alone come to 1.4 GiB, dominated by 13 GNN checkpoints.
-> Running the ensemble therefore means training the cross-validation models first, following
-> [Training](docs/README.md#training). The trained ensemble will also be published to the Hugging
-> Face Hub after peer review, at which point `from_pretrained` accepts a Hub repo id in place of
-> the local path.
+> Staging a *local* ensemble needs the per-fold models under `outputs/cv/`, which the released
+> archives omit, so it means training the cross-validation models first, following
+> [Training](docs/README.md#training). To simply run the published ensemble, pass the Hub repo
+> id as above; nothing needs training or unpacking.
 
-Also pass `n_jobs=-1` to parallelize featurization across members, and `load_strategy="lazy"` to
-load members on demand instead of all at once.
+### Scoring from a generative loop (REINVENT4)
+
+A generative run cannot import RetroTAC directly: REINVENT4 pins its own `torch` and `rdkit`, and
+the ensemble's `torch` and `xgboost` bundle separate `libomp` copies that segfault together in one
+process. RetroTAC therefore serves over HTTP, in its own environment, and REINVENT calls it through
+a standard-library scoring component that adds nothing to REINVENT's install:
+
+```bash
+uv sync --extra serve
+python -m retrotac.serve                         # 127.0.0.1:8000, OpenAPI docs at /docs
+```
+
+```bash
+curl -s localhost:8000/predict -H 'Content-Type: application/json' \
+     -d '{"smiles": ["CCO", "not-a-smiles((("]}'
+# {"mean":[0.41,null],"std":[0.07,null]}
+```
+
+The payload mirrors `predict(return_details=True)` key for key, one value per submitted SMILES,
+`null` where a molecule could not be scored — a malformed string is data, not a reason to end a
+run. [reinvent/README.md](reinvent/README.md) covers the component, the plugin's `PYTHONPATH`
+requirements, the shipped [`scoring.toml`](reinvent/scoring.toml), and which half of that
+configuration is tested here (the REINVENT-owned keys are not).
 
 ## 📝 Notes on Implementation
 
@@ -141,6 +171,7 @@ convention, not a calibrated decision boundary.
 ## 📚 Documentation
 
 - [docs/README.md](docs/README.md) — reproducibility guide
+- [reinvent/README.md](reinvent/README.md) — the HTTP scoring server and its REINVENT4 component
 - [CONTRIBUTING.md](CONTRIBUTING.md) — environment setup, coding standards, and the
   cross-validation scheme
 - [apptainer/README.md](apptainer/README.md) — building and running the containers

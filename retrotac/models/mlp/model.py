@@ -9,11 +9,10 @@ replaced by a LightningModule + pl.Trainer.
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import huggingface_hub as hf
 import numpy as np
-import optuna
 import skops.io as sio
 import torch
 import torch.nn as nn
@@ -29,6 +28,13 @@ from retrotac.chem_utils import (  # noqa: E402
     sanitize_matrix,
     standardize_all,
 )
+
+# Optuna only ever reaches this module through `fit(trial=...)`, i.e. during
+# HPO, and it ships in the `training` extra -- so keep it out of the import
+# path that plain inference (ensemble/predict) walks, and import it lazily
+# where it is actually used.
+if TYPE_CHECKING:
+    import optuna
 
 
 # ── tabular dataset ─────────────────────────────────────────────────────────
@@ -242,7 +248,7 @@ class TorchMLPRegressor:
         y_val: Optional[np.ndarray] = None,
         X_fp_val: Optional[np.ndarray] = None,
         X_desc_val: Optional[np.ndarray] = None,
-        trial: Optional[optuna.Trial] = None,
+        trial: Optional["optuna.Trial"] = None,
     ) -> "TorchMLPRegressor":
         """Fit the MLP to featurized SMILES with early stopping.
 
@@ -349,14 +355,17 @@ class TorchMLPRegressor:
         callbacks = [early, ckpt_cb]
         # Only a real Optuna Trial (not a FixedTrial) supports pruning; the
         # integration import path moved between Optuna versions, hence the fallback.
-        if isinstance(trial, optuna.Trial):
-            try:
-                from optuna_integration.pytorch_lightning import (
-                    PyTorchLightningPruningCallback,
-                )
-            except ImportError:
-                from optuna.integration import PyTorchLightningPruningCallback
-            callbacks.append(PyTorchLightningPruningCallback(trial, monitor="val_loss"))
+        if trial is not None:
+            import optuna
+
+            if isinstance(trial, optuna.Trial):
+                try:
+                    from optuna_integration.pytorch_lightning import (
+                        PyTorchLightningPruningCallback,
+                    )
+                except ImportError:
+                    from optuna.integration import PyTorchLightningPruningCallback
+                callbacks.append(PyTorchLightningPruningCallback(trial, monitor="val_loss"))
 
         trainer = pl.Trainer(
             accelerator=("cpu" if self.device == "cpu" else "auto"),

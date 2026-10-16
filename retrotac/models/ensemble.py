@@ -108,6 +108,31 @@ class RetroTAC:
             for name in tqdm(self._member_specs, desc="Loading ensemble members", unit="model"):
                 self._cache[name] = self._load_member(name)
 
+    @property
+    def members(self) -> Dict[str, Dict[str, Any]]:
+        """Member specs ({"backend", "seed", "fold", "path"}) keyed by model name."""
+        return dict(self._member_specs)
+
+    @property
+    def weights(self) -> Dict[str, float]:
+        """Normalized Caruana weights (summing to 1) keyed by model name."""
+        return dict(self._weights)
+
+    @property
+    def feature_config(self) -> Dict[str, Any]:
+        """The ensemble's config.json: fp_size/fp_radius/use_fingerprints/use_descriptors."""
+        return dict(self._feature_config)
+
+    @property
+    def device(self) -> str:
+        """Compute device the gnn members were loaded on."""
+        return self._device
+
+    @property
+    def load_strategy(self) -> str:
+        """Member loading strategy: "eager", "lazy", or "stream"."""
+        return self._load_strategy
+
     def _load_member(self, name: str) -> Any:
         """Instantiate one member model from its manifest spec (no caching)."""
         spec = self._member_specs[name]

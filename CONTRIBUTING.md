@@ -53,6 +53,23 @@ see `apptainer/README.md`. There's one per profile above (`inference`,
 `training`, `scoring`), each a single `.sif` file regardless of how many
 packages it holds.
 
+### macOS: set `OMP_NUM_THREADS=1`
+
+`torch` and `scikit-learn` each bundle their own `libomp.dylib` in the `.venv`, and loading both
+OpenMP runtimes into one multi-threaded process **segfaults**. Anything that touches more than
+one backend hits this — notably `RetroTAC.predict`, which mixes torch GNN members with
+scikit-learn preprocessors and dies part-way through the 27 members:
+
+```bash
+OMP_NUM_THREADS=1 python scripts/models/predict.py ...
+OMP_NUM_THREADS=1 pytest
+OMP_NUM_THREADS=1 jupyter lab          # or set it before the kernel starts
+```
+
+It must be set *before* either library is imported, so in a notebook it belongs in the first
+cell, above the imports (`notebooks/retrotac_quickstart.ipynb` does this), and a kernel that has
+already imported torch needs a restart. Linux and the Apptainer containers are unaffected.
+
 ### Training
 
 Example:
