@@ -50,7 +50,7 @@ selection, the DeepPSA comparison, and every figure — with the command for eac
 
 ## ⚙️ Installation
 
-RetroTAC targets Python 3.12 and manages dependencies with [uv](https://docs.astral.sh/uv/):
+RetroTAC supports Python 3.12+ and manages dependencies with [uv](https://docs.astral.sh/uv/):
 
 ```bash
 pip install uv
