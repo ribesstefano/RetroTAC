@@ -283,3 +283,7 @@ backups/
 
 retrotac_staged/
 docs/superpowers/
+
+# Scratch data the quickstart notebook downloads next to itself
+retrotac_data.tar.gz
+retrotac_data/
