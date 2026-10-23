@@ -32,7 +32,7 @@ from typing import Any, List, Optional
 import numpy as np
 
 from .add_tag import add_tag
-from .client import DEFAULT_MAX_BATCH, DEFAULT_TIMEOUT, DEFAULT_URL, RetroTACClient
+from .client_retrotac import DEFAULT_MAX_BATCH, DEFAULT_TIMEOUT, DEFAULT_URL, RetroTACClient
 from .component_results import ComponentResults
 
 # Scoring-component defaults that are not the client's own: which model output
